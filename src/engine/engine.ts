@@ -443,6 +443,30 @@ export class MatchingEngine {
     };
   }
 
+  /**
+   * The resting orders an incoming order could trade with, best first: live (outside the
+   * settlement margin), on the opposite side, crossing its limit price, and not in
+   * `skip`. Read-only: lets the caller check them (e.g. on-chain delegations) before
+   * `place`.
+   */
+  crossingOrders(
+    incoming: Pick<OrderInput, "chain" | "asset" | "side" | "limitPrice">,
+    now: number,
+    limit: number,
+    skip: ReadonlySet<string> = new Set(),
+  ): OrderView[] {
+    const book = this.books.get(marketKey(incoming.chain, incoming.asset));
+    if (!book) return [];
+    const out: OrderView[] = [];
+    for (const o of incoming.side === "buy" ? book.asks : book.bids) {
+      if (out.length >= limit) break;
+      if (!crosses(incoming as OrderInput, o.input)) break;
+      if (!this.live(o, now) || skip.has(o.input.id)) continue;
+      out.push(view(o));
+    }
+    return out;
+  }
+
   getOrder(orderId: string): OrderView | undefined {
     const o = this.orders.get(orderId);
     return o ? view(o) : undefined;

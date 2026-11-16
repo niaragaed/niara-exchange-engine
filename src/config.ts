@@ -24,6 +24,10 @@ export interface ServiceConfig {
   expirySweepSecs: number;
   /** How often chains and listings are re-read (listing status, minimums). */
   marketRefreshSecs: number;
+  /** Solana devnet RPC (may hold an API key: never logged). Devnet is enforced by genesis hash. */
+  solanaRpcUrl: string;
+  /** On-chain delegate checks before matching and settling (spec §3.5). */
+  delegateCheck: boolean;
 }
 
 export class ConfigError extends Error {
@@ -92,16 +96,42 @@ export function loadConfig(env: Env = process.env): ServiceConfig {
     settlementMarginSecs: int(env, "SETTLEMENT_MARGIN_SECS", 60, 0, 86_400),
     expirySweepSecs: int(env, "EXPIRY_SWEEP_SECS", 30, 1, 3_600),
     marketRefreshSecs: int(env, "MARKET_REFRESH_SECS", 60, 1, 86_400),
+    solanaRpcUrl: rpcUrl(env["SOLANA_RPC_URL"]),
+    delegateCheck: bool(env, "DELEGATE_CHECK", true),
   };
+}
+
+function rpcUrl(raw: string | undefined): string {
+  if (!raw) return "https://api.devnet.solana.com";
+  let url: URL;
+  try {
+    url = new URL(raw);
+  } catch {
+    throw new ConfigError("SOLANA_RPC_URL is not a URL");
+  }
+  if (url.protocol !== "https:" && url.protocol !== "http:") throw new ConfigError("SOLANA_RPC_URL must be http(s)");
+  return raw;
+}
+
+function bool(env: Env, name: string, fallback: boolean): boolean {
+  const raw = env[name];
+  if (raw === undefined || raw === "") return fallback;
+  if (raw === "on" || raw === "true" || raw === "1") return true;
+  if (raw === "off" || raw === "false" || raw === "0") return false;
+  throw new ConfigError(`${name} must be on or off`);
 }
 
 /**
  * The configuration as safe to log: no part of the database URL (user, host, port,
  * database, password) and no RPC URL, which may hold an API key.
  */
-export function describeConfig(c: ServiceConfig): Record<string, string | number> {
-  const { databaseUrl: _db, ...rest } = c;
-  return { ...rest, databaseUrl: "(set, not shown)" };
+export function describeConfig(c: ServiceConfig): Record<string, string | number | boolean | null> {
+  const { databaseUrl: _db, solanaRpcUrl, ...rest } = c;
+  return {
+    ...rest,
+    databaseUrl: "(set, not shown)",
+    solanaRpcUrl: solanaRpcUrl === "https://api.devnet.solana.com" ? solanaRpcUrl : "(custom, not shown)",
+  };
 }
 
 /**

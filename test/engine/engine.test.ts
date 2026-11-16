@@ -394,6 +394,20 @@ describe("expiry", () => {
     expect(engine.book(CHAIN, ASSET).asks).toHaveLength(1);
   });
 
+  it("lists the resting orders an incoming order would cross, best first, skipping unmatchable and given ones", () => {
+    const a = order({ side: "sell", wallet: "alice", limitPrice: 900n });
+    const b = order({ side: "sell", wallet: "carol", limitPrice: 1_000n });
+    const c = order({ side: "sell", wallet: "dave", limitPrice: 1_100n });
+    const soon = order({ side: "sell", wallet: "erin", limitPrice: 800n, expiresAt: NOW + 100 });
+    for (const o of [a, b, c, soon]) engine.place(o, NOW);
+    const incoming = { chain: CHAIN, asset: ASSET, side: "buy" as const, limitPrice: 1_000n };
+    expect(engine.crossingOrders(incoming, NOW, 10).map((o) => o.id)).toEqual([soon.id, a.id, b.id]);
+    expect(engine.crossingOrders(incoming, NOW + 50, 10).map((o) => o.id)).toEqual([a.id, b.id]);
+    expect(engine.crossingOrders(incoming, NOW, 10, new Set([a.id])).map((o) => o.id)).toEqual([soon.id, b.id]);
+    expect(engine.crossingOrders(incoming, NOW, 1).map((o) => o.id)).toEqual([soon.id]);
+    expect(engine.getOrder(a.id)?.status).toBe("open");
+  });
+
   it("honours a custom margin", () => {
     const e = new MatchingEngine({ newMatchId: seededUuidV4(2), settlementMarginSecs: 0 });
     e.upsertMarket(market());

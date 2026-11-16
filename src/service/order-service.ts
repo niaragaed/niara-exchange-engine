@@ -10,11 +10,12 @@ import {
   loadListings,
 } from "../db/repository.ts";
 import type { CancelReason, EngineEvent, MatchingEngine, OrderView } from "../engine/engine.ts";
-import type { Match } from "../engine/types.ts";
+import type { Match, OrderInput } from "../engine/types.ts";
 import { admitCancelIntent, parseCancelIntent } from "../intents/cancel.ts";
 import { IntentError } from "../intents/types.ts";
 import { parseOrderIntent } from "../intents/validate.ts";
 import { admitOrderIntent } from "../intents/verify.ts";
+import { orderNeed, type CoverageChecker } from "../solana/coverage.ts";
 import { buildCatalog, canonicalAddress, type Catalog } from "./catalog.ts";
 import { persistEvents, persistPlacement } from "./persist.ts";
 import { rebuildEngine } from "./rebuild.ts";
@@ -50,6 +51,8 @@ export interface OrderServiceDeps {
   newMatchId: () => string;
   settlementMarginSecs: number;
   maxOpenOrdersPerWallet: number;
+  /** On-chain delegate checks per chain (spec §3.5); a chain without one is not checked. */
+  coverage?: Partial<Record<ChainId, CoverageChecker>>;
   /** Called once when the engine and the database may have diverged: stop the process. */
   onFatal: (err: unknown) => void;
   log?: (event: string, data?: Json) => void;
@@ -175,6 +178,11 @@ export class OrderService {
     return service;
   }
 
+  /** The admission config of a chain, as last read from `chains`. */
+  chainConfig(chain: ChainId) {
+    return this.catalog.chains.get(chain);
+  }
+
   /** Engine state, for tests and diagnostics. */
   state() {
     return this.engine.exportState();
@@ -182,16 +190,58 @@ export class OrderService {
 
   /** Runs `fn` under the mutex and in one service_role transaction; any failure is fatal. */
   private async exclusive(fn: (tx: Queryable) => Promise<Reply>): Promise<Reply> {
-    return this.mutex.run(async () => {
-      if (this.failed) return error(503, "unavailable", "the service stopped after a database failure");
-      try {
-        return await asServiceRole(this.deps.db, fn);
-      } catch (e) {
-        this.failed = true;
-        this.deps.log?.("fatal", { error: e instanceof Error ? e.message : String(e) });
-        this.deps.onFatal(e);
-        return error(503, "unavailable", "database write failed; the service is restarting");
-      }
+    return this.mutex.run(() => this.inTransaction(fn));
+  }
+
+  /** One service_role transaction (caller holds the mutex); any failure is fatal. */
+  private async inTransaction(fn: (tx: Queryable) => Promise<Reply>): Promise<Reply> {
+    if (this.failed) return error(503, "unavailable", "the service stopped after a database failure");
+    try {
+      return await asServiceRole(this.deps.db, fn);
+    } catch (e) {
+      this.failed = true;
+      this.deps.log?.("fatal", { error: e instanceof Error ? e.message : String(e) });
+      this.deps.onFatal(e);
+      return error(503, "unavailable", "database write failed; the service is restarting");
+    }
+  }
+
+  /**
+   * Spec §3.5, before matching: checks on-chain the resting orders `order` would trade
+   * with, best first, until their covered quantity reaches the order's (in rounds of 50,
+   * at most 5). Returns the ids of those whose delegation or balance no longer covers
+   * them. Throws on RPC trouble. Caller holds the mutex.
+   */
+  private async uncoveredMakers(order: OrderInput, now: number, checker: CoverageChecker): Promise<string[]> {
+    const checked = new Set<string>();
+    const stale: string[] = [];
+    let covered = 0n;
+    for (let round = 0; round < 5 && covered < order.quantity; round++) {
+      const candidates = this.engine.crossingOrders(order, now, 50, checked);
+      if (candidates.length === 0) break;
+      const results = await checker.check(candidates.map(orderNeed));
+      candidates.forEach((c, i) => {
+        checked.add(c.id);
+        if (results[i] === null) covered += c.remaining;
+        else {
+          stale.push(c.id);
+          this.deps.log?.("order_not_covered", { orderId: c.id, reason: results[i] });
+        }
+      });
+    }
+    return stale;
+  }
+
+  /**
+   * Spec §3.5: takes orders out of the book because their on-chain delegation or balance
+   * no longer covers them, and stores them `stale` (the settlement worker calls this
+   * before settling). Terminal orders are left as they are.
+   */
+  async markStale(orderIds: readonly string[]): Promise<Reply> {
+    return this.exclusive(async (tx) => {
+      const events = orderIds.flatMap((id) => this.engine.markStale(id));
+      await persistEvents(tx, this.engine, events);
+      return { status: 200, body: { stale: events.length } };
     });
   }
 
@@ -218,30 +268,65 @@ export class OrderService {
     if (!admitted.ok) return error(admitted.reason === "bad_signature" ? 401 : 422, admitted.reason, admitted.detail);
     const { order } = admitted;
 
-    return this.exclusive(async (tx) => {
+    // Spec §3.5: the new order must be covered on-chain before it can enter the book.
+    const checker = this.deps.coverage?.[order.chain];
+    if (checker) {
+      let reason: string | null | undefined;
+      try {
+        [reason] = await checker.check([orderNeed({ ...order, remaining: order.quantity })]);
+      } catch (e) {
+        this.deps.log?.("coverage_check_failed", { error: e instanceof Error ? e.message : String(e) });
+        return error(503, "chain_unavailable", "could not check the on-chain delegation; try again");
+      }
+      if (reason) return error(422, "delegate_not_covered", reason);
+    }
+
+    return this.mutex.run(async () => {
       const now = this.deps.clock();
-      if (await findOrderByNonce(tx, order.chain, order.wallet, admitted.intent.nonce)) {
-        return error(409, "duplicate_nonce", "this wallet already used this nonce on this chain");
+      let stale: string[] = [];
+      if (checker) {
+        try {
+          stale = await this.uncoveredMakers(order, now, checker);
+        } catch (e) {
+          this.deps.log?.("coverage_check_failed", { error: e instanceof Error ? e.message : String(e) });
+          return error(503, "chain_unavailable", "could not check the resting orders' on-chain delegations; try again");
+        }
       }
-      const open = await countOpenOrders(tx, order.chain, order.wallet, now);
-      if (open >= this.deps.maxOpenOrdersPerWallet) {
-        return error(429, "too_many_open_orders", `at most ${this.deps.maxOpenOrdersPerWallet} open orders per wallet`);
-      }
-      const result = this.engine.place(order, now);
-      if (!result.accepted) return error(422, result.reason);
-      await persistPlacement(tx, this.engine, this.catalog, result, {
-        nonce: admitted.intent.nonce,
-        intentVersion: admitted.intent.version,
-        intentSignature: admitted.signature,
-      });
-      return {
-        status: 201,
-        body: {
-          order: orderJson(result.order, cancelReasonOf(result.events, result.order.id)),
-          matches: result.matches.map(matchJson),
-        },
-      };
+      return this.inTransaction((tx) => this.placeChecked(tx, admitted, now, stale));
     });
+  }
+
+  /** The database part of a submission, in one transaction: stale makers out, checks, match, write. */
+  private async placeChecked(
+    tx: Queryable,
+    admitted: Extract<Awaited<ReturnType<typeof admitOrderIntent>>, { ok: true }>,
+    now: number,
+    stale: readonly string[],
+  ): Promise<Reply> {
+    const { order } = admitted;
+    const staleEvents = stale.flatMap((id) => this.engine.markStale(id));
+    await persistEvents(tx, this.engine, staleEvents);
+    if (await findOrderByNonce(tx, order.chain, order.wallet, admitted.intent.nonce)) {
+      return error(409, "duplicate_nonce", "this wallet already used this nonce on this chain");
+    }
+    const open = await countOpenOrders(tx, order.chain, order.wallet, now);
+    if (open >= this.deps.maxOpenOrdersPerWallet) {
+      return error(429, "too_many_open_orders", `at most ${this.deps.maxOpenOrdersPerWallet} open orders per wallet`);
+    }
+    const result = this.engine.place(order, now);
+    if (!result.accepted) return error(422, result.reason);
+    await persistPlacement(tx, this.engine, this.catalog, result, {
+      nonce: admitted.intent.nonce,
+      intentVersion: admitted.intent.version,
+      intentSignature: admitted.signature,
+    });
+    return {
+      status: 201,
+      body: {
+        order: orderJson(result.order, cancelReasonOf(result.events, result.order.id)),
+        matches: result.matches.map(matchJson),
+      },
+    };
   }
 
   async cancelOrder(body: unknown): Promise<Reply> {

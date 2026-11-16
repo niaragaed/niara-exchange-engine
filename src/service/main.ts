@@ -3,6 +3,9 @@ import { serve } from "@hono/node-server";
 import { ConfigError, describeConfig, loadConfig, redactSecrets } from "../config.ts";
 import { connectPg } from "../db/pg.ts";
 import { randomMatchId } from "../engine/random-id.ts";
+import { solanaCoverageChecker } from "../solana/coverage.ts";
+import { PROGRAM_ID } from "../solana/idl.ts";
+import { connectDevnet } from "../solana/rpc.ts";
 import { createApp } from "./http.ts";
 import { NotSingleInstanceError, OrderService, ServiceRoleError } from "./order-service.ts";
 
@@ -41,6 +44,11 @@ async function main(): Promise<void> {
     if (!stopping) die("database_connection_lost", err);
   });
 
+  // Solana devnet (genesis-checked): on-chain delegate checks (spec §3.5).
+  const solana = await connectDevnet(config.solanaRpcUrl);
+  const coverage = config.delegateCheck ? { "solana-devnet": solanaCoverageChecker(solana, PROGRAM_ID) } : {};
+  if (!config.delegateCheck) log("delegate_check_disabled", { notice: "orders are matched without on-chain delegate checks" });
+
   let service: OrderService;
   try {
     service = await OrderService.start({
@@ -50,6 +58,7 @@ async function main(): Promise<void> {
       newMatchId: randomMatchId,
       settlementMarginSecs: config.settlementMarginSecs,
       maxOpenOrdersPerWallet: config.maxOpenOrdersPerWallet,
+      coverage,
       onFatal: (err) => {
         // Engine and database may differ: exit; the restart rebuilds from the database.
         setImmediate(() => die("fatal_persist_failure", err));
@@ -59,6 +68,15 @@ async function main(): Promise<void> {
   } catch (e) {
     if (e instanceof NotSingleInstanceError || e instanceof ServiceRoleError) die("refused_to_start", e);
     throw e;
+  }
+
+  const program = service.chainConfig("solana-devnet")?.settlementProgram;
+  if (program !== PROGRAM_ID.toBase58()) {
+    log("solana_program_mismatch", {
+      notice: "chains.settlement_program for solana-devnet is not the IDL's program; run the listing sync",
+      configured: program ?? null,
+      idl: PROGRAM_ID.toBase58(),
+    });
   }
 
   const app = createApp(service, { maxBodyBytes: config.maxBodyBytes, log });

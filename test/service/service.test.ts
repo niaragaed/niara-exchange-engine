@@ -4,6 +4,7 @@ import type { Database } from "../../src/db/database.ts";
 import { loadMatches, loadOrder } from "../../src/db/repository.ts";
 import { randomMatchId } from "../../src/engine/random-id.ts";
 import type { OrderIntent } from "../../src/intents/types.ts";
+import type { CoverageChecker } from "../../src/solana/coverage.ts";
 import { createApp } from "../../src/service/http.ts";
 import {
   NotSingleInstanceError,
@@ -379,5 +380,65 @@ describe("public endpoints", () => {
     expect((await call(`/v1/books/sepolia/${SOL_ASSET}`)).status).toBe(404);
     expect((await call(`/v1/books/solana-devnet/${SOL_USDT}`)).body.error).toBe("unknown_market");
     expect((await call("/v1/nothing")).status).toBe(404);
+  });
+});
+
+describe("on-chain delegate check (spec §3.5), with a fake checker", () => {
+  // Wallets listed here are "not covered" on-chain; `down` simulates RPC trouble.
+  const uncovered = new Map<string, string>();
+  let down = false;
+  const fake: CoverageChecker = {
+    check: async (needs) => {
+      if (down) throw new Error("TEST: RPC down");
+      return needs.map((n) => uncovered.get(n.wallet) ?? null);
+    },
+  };
+
+  beforeEach(async () => {
+    uncovered.clear();
+    down = false;
+    service = await OrderService.start({ ...deps(), coverage: { "solana-devnet": fake } });
+    app = createApp(service, { maxBodyBytes: MAX_BODY });
+  });
+
+  it("refuses a new order its wallet has not delegated, and stores nothing", async () => {
+    uncovered.set(alice.wallet, "the token account does not delegate to the vault");
+    const r = await submit(alice, sol(alice, { side: "sell" }));
+    expect([r.status, r.body.error, r.body.detail]).toEqual([422, "delegate_not_covered", "the token account does not delegate to the vault"]);
+    expect((await t.pglite.query("select 1 from public.orders")).rows).toEqual([]);
+  });
+
+  it("marks a resting order stale when its delegation was revoked before matching, and does not match it", async () => {
+    const maker = (await submit(alice, sol(alice, { side: "sell" }))).body.order;
+    uncovered.set(alice.wallet, "delegated 0 < needed 5000000");
+    const r = await submit(bob, sol(bob, { side: "buy", quantity: 2n * SOL_LOT, limitPrice: 30_000_000n }));
+    expect(r.status).toBe(201);
+    expect(r.body.matches).toEqual([]);
+    expect(r.body.order.status).toBe("open");
+    expect(await loadOrder(t.db, maker.id)).toMatchObject({ status: "stale" });
+    expect((await call(`/v1/books/solana-devnet/${SOL_ASSET}`)).body.asks).toEqual([]);
+    // The stale order can still be cancelled by its wallet.
+    const intent = (await loadOrder(t.db, maker.id))!;
+    const cancel = cancelOf(sol(alice, { nonce: intent.nonce }));
+    expect((await call("/v1/orders/cancel", { cancel, signature: await alice.signCancel(cancel) })).status).toBe(200);
+  });
+
+  it("matches the covered orders behind an uncovered one", async () => {
+    const stale = (await submit(alice, sol(alice, { side: "sell", limitPrice: 24_000_000n }))).body.order;
+    const good = (await submit(mallory, sol(mallory, { side: "sell", limitPrice: 25_000_000n }))).body.order;
+    uncovered.set(alice.wallet, "the token account does not delegate to the vault");
+    const r = await submit(bob, sol(bob, { side: "buy", quantity: 2n * SOL_LOT, limitPrice: 30_000_000n }));
+    expect(r.body.matches.map((m: { sellOrderId: string }) => m.sellOrderId)).toEqual([good.id]);
+    expect((await loadOrder(t.db, stale.id))?.status).toBe("stale");
+  });
+
+  it("refuses to match when the chain cannot be read (503), and lets markStale take orders out", async () => {
+    const maker = (await submit(alice, sol(alice, { side: "sell" }))).body.order;
+    down = true;
+    const r = await submit(bob, sol(bob, { side: "buy" }));
+    expect([r.status, r.body.error]).toEqual([503, "chain_unavailable"]);
+    expect((await loadOrder(t.db, maker.id))?.status).toBe("open");
+    expect((await service.markStale([maker.id])).body).toEqual({ stale: 1 });
+    expect((await loadOrder(t.db, maker.id))?.status).toBe("stale");
   });
 });

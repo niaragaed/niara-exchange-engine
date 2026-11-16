@@ -17,6 +17,8 @@ describe("loadConfig", () => {
       settlementMarginSecs: 60,
       expirySweepSecs: 30,
       marketRefreshSecs: 60,
+      solanaRpcUrl: "https://api.devnet.solana.com",
+      delegateCheck: true,
     });
     expect(loadConfig({ DATABASE_URL: URL_OK, PORT: "9000", MAX_OPEN_ORDERS_PER_WALLET: "5" })).toMatchObject({
       port: 9000,
@@ -29,6 +31,14 @@ describe("loadConfig", () => {
     expect(() => loadConfig({ DATABASE_URL: "not a url" })).toThrow(/not a URL/);
     expect(() => loadConfig({ DATABASE_URL: "https://example.invalid" })).toThrow(/postgres/);
     expect(() => loadConfig({ DATABASE_URL: URL_OK.replace(":5432", ":6543") })).toThrow(/advisory lock/);
+  });
+
+  it("reads the Solana RPC and the delegate check switch, and never shows a custom RPC URL", () => {
+    const c = loadConfig({ DATABASE_URL: URL_OK, SOLANA_RPC_URL: "https://rpc.example.invalid/?api-key=k", DELEGATE_CHECK: "off" });
+    expect([c.solanaRpcUrl, c.delegateCheck]).toEqual(["https://rpc.example.invalid/?api-key=k", false]);
+    expect(JSON.stringify(describeConfig(c))).not.toContain("rpc.example.invalid");
+    expect(() => loadConfig({ DATABASE_URL: URL_OK, DELEGATE_CHECK: "maybe" })).toThrow(/on or off/);
+    expect(() => loadConfig({ DATABASE_URL: URL_OK, SOLANA_RPC_URL: "ftp://x" })).toThrow(/http/);
   });
 
   it("refuses malformed or out-of-range numbers", () => {
@@ -80,6 +90,7 @@ describe("loadConfig", () => {
     expect(Object.keys(env).sort()).toEqual(
       [
         "DATABASE_URL",
+        "DELEGATE_CHECK",
         "EXPIRY_SWEEP_SECS",
         "HOST",
         "MARKET_REFRESH_SECS",
