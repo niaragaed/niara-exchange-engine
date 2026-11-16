@@ -448,9 +448,14 @@ export class MatchingEngine {
     return o ? view(o) : undefined;
   }
 
-  book(chain: ChainId, asset: string): BookSnapshot {
+  /**
+   * Price levels of a book. With `now`, orders that are no longer matchable (within the
+   * settlement margin of their expiry) are left out even before `expire` sweeps them.
+   */
+  book(chain: ChainId, asset: string, now?: number): BookSnapshot {
     const b = this.books.get(marketKey(chain, asset)) ?? { bids: [], asks: [] };
-    return { chain, asset, bids: levels(b.bids), asks: levels(b.asks) };
+    const keep = (list: OrderState[]) => (now === undefined ? list : list.filter((o) => this.live(o, now)));
+    return { chain, asset, bids: levels(keep(b.bids)), asks: levels(keep(b.asks)) };
   }
 
   private validate(input: OrderInput, now: number): RejectReason | null {

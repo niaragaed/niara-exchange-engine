@@ -386,6 +386,14 @@ describe("expiry", () => {
     expect(engine.cancel(a.id, "alice")).toEqual({ cancelled: false, reason: "not_live" });
   });
 
+  it("hides unmatchable orders from a book read at `now`, before any sweep", () => {
+    const a = order({ side: "sell", wallet: "alice", expiresAt: NOW + 100 });
+    engine.place(a, NOW);
+    expect(engine.book(CHAIN, ASSET, NOW).asks).toHaveLength(1);
+    expect(engine.book(CHAIN, ASSET, NOW + 40).asks).toEqual([]);
+    expect(engine.book(CHAIN, ASSET).asks).toHaveLength(1);
+  });
+
   it("honours a custom margin", () => {
     const e = new MatchingEngine({ newMatchId: seededUuidV4(2), settlementMarginSecs: 0 });
     e.upsertMarket(market());

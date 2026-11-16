@@ -11,11 +11,14 @@
     "typecheck": "tsc --noEmit -p tsconfig.json",
     "test": "vitest run",
     "test:engine": "vitest run test/engine",
-    "test:intents": "vitest run test/intents"
+    "test:intents": "vitest run test/intents",
+    "start": "node --env-file=.env src/service/main.ts"
   },
   "dependencies": {
+    "@hono/node-server": "2.1.6",
     "@noble/ed25519": "3.2.0",
     "@scure/base": "2.4.0",
+    "hono": "4.13.16",
     "pg": "8.23.1",
     "viem": "2.57.14"
   },
