@@ -17,4 +17,5 @@ npm run typecheck
 npm test
 ```
 
-See `CLAUDE.md` for the repo rules.
+See `CLAUDE.md` for the repo rules and `docs/decisions.md` for the design
+decisions made on top of the spec.

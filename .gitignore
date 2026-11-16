@@ -18,3 +18,4 @@ keys/
 # Supabase CLI local state (no local stack on this machine).
 supabase/.temp/
 supabase/.branches/
+.vitest/
