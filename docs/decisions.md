@@ -148,8 +148,9 @@ order.
   `niara-exchange-dev` (by the founder, through the Supabase dashboard
   tooling, not from this repo). `20261116130000_fk_indexes` (indexes covering
   the composite foreign keys `matches (chain_id, asset)` and
-  `settlements (match_id, chain_id)`) is written and **not applied**; the
-  founder applies it. This repo never applies migrations to the remote.
+  `settlements (match_id, chain_id)`) is applied too (by the founder; seen
+  on the remote on 2026-11-16). This repo never applies migrations to the
+  remote.
 
 ## Order service (`src/service`)
 
@@ -196,18 +197,22 @@ order.
 - **Housekeeping.** Timers sweep expired orders (`EXPIRY_SWEEP_SECS`) and
   re-read chains and listings (`MARKET_REFRESH_SECS`); a lot size change while
   orders rest is refused and logged.
-- **Nothing is settled.** Matches are stored `pending`; the settlement worker
-  is still a stub.
+- **Settlement** is the worker's (below), in the same process; with
+  `WORKER_ENABLED=off`, matches stay `pending`.
 
 ## Configuration (`src/config.ts`, `.env.example`)
 
 Environment variables only (`npm start` runs `node --env-file=.env`):
 `DATABASE_URL` (required, secret), `HOST`, `PORT`, `MAX_BODY_BYTES`,
 `MAX_OPEN_ORDERS_PER_WALLET`, `SETTLEMENT_MARGIN_SECS`, `EXPIRY_SWEEP_SECS`,
-`MARKET_REFRESH_SECS`. The service refuses to start when a `NEXT_PUBLIC_*`
-variable names a server secret (service role, password, database URL, private
-or operator key, JWT secret) or contains the database URL, its password or
-`SUPABASE_SERVICE_ROLE_KEY`. Logs never print the database password.
+`MARKET_REFRESH_SECS`, `SOLANA_RPC_URL` (optional, devnet only),
+`DELEGATE_CHECK`, `WORKER_ENABLED`, `SOLANA_OPERATOR_KEYPAIR` (a path),
+`WORKER_POLL_SECS`, `WORKER_MAX_ATTEMPTS`, `SETTLE_DEADLINE_MARGIN_SECS`.
+The service refuses to start when a `NEXT_PUBLIC_*` variable names a server
+secret (service role, password, database URL, private or operator key,
+keypair, JWT secret) or contains the database URL, its password,
+`SUPABASE_SERVICE_ROLE_KEY` or a private RPC URL. Logs never show any part of
+the database URL.
 
 ## Tooling
 
@@ -220,23 +225,100 @@ packages are at least two weeks old when added. vitest's hook timeout is
 `.npmrc` sets `legacy-peer-deps` because npm 10 crashes resolving vitest 5's
 optional peer chain; `vite` and `@types/node` are pinned directly instead.
 
+## Solana devnet settlement (`src/solana`, `src/adapters`, `src/worker`)
+
+- **IDL, not hand-written layouts.** The `niara_exchange` IDL is vendored in
+  `src/solana/idl` (a test checks it equals the Solana repo's build, whose
+  bytes match the program deployed on devnet). A small Borsh codec driven by
+  the IDL encodes `settle` and decodes `Config`, `Listing` and the `Settled`
+  event; it throws on any IDL type it does not know. `@anchor-lang/core` and
+  `@solana/spl-token` are not used: spl-token pulls `bigint-buffer`
+  (GHSA-3gc7-fjrx-p6mg, no fix). Only `@solana/web3.js` 1.98.4, whose
+  remaining advisories are moderate and transitive (`jayson` →
+  `stream-json`, `uuid`).
+- **Devnet only.** Every Solana entry point (adapter, sync, e2e, service)
+  checks the RPC's genesis hash and refuses anything but devnet.
+- **Adapter.** `settle(match_id = the 16 bytes of the match UUID,
+  asset_amount = quantity, payment_amount)`, between the parties'
+  associated token accounts (the intent names wallets, not token accounts).
+  Order per match: if `["settled", match_id]` exists, nothing is sent and the
+  transaction that created it is returned (`alreadySettled`; the oldest
+  successful signature of the record); else build, sign (operator only),
+  **simulate** (a failed simulation is never sent), send once, confirm. A
+  retry after an ambiguous confirmation starts again from the record check.
+  Program errors map to the IDL's name and message (`DelegateNotSet (6025):
+  Token account has not delegated to the vault authority`); Anchor
+  constraint errors are read from the logs; an "already in use" record means
+  settled; RPC trouble (and unknown RPC errors) and `Config.paused` are
+  transient. The adapter refuses an operator key that is not
+  `Config.settlement_operator`.
+- **Operator key.** A path in `SOLANA_OPERATOR_KEYPAIR`; the file must be
+  outside the repository and mode 600; errors never quote it; it is never
+  logged.
+- **Delegate check (spec §3.5), both legs.** `settle` moves both legs
+  through the vault PDA, so a sell order is covered by its asset account
+  (delegate = vault, delegated and balance ≥ remaining) and a buy order by
+  its USDT account (≥ remaining / lot × limit price). Before matching: the
+  new order is refused if uncovered (422 `delegate_not_covered`); the resting
+  orders it would cross are checked best first until enough covered quantity
+  is found, and uncovered ones are marked `stale` in the same transaction as
+  the placement. If the chain cannot be read the order is refused (503), not
+  matched unchecked. Before settling: the worker checks the match's two
+  needs; an uncovered order is marked stale and the match fails. The check is
+  per order: aggregate approvals across several orders of one wallet are not
+  summed.
+- **Worker.** In the order service process (the advisory lock makes it the
+  only one). Oldest match first (`pending`, or `settling` after a crash). Per
+  match: (1) already settled on-chain? confirm, send nothing (this comes
+  first: after a crash mid-send the delegation is already consumed, and a
+  coverage check would fail a settled match); (2) fail if `expires_at` has
+  passed, or is less than `SETTLE_DEADLINE_MARGIN_SECS` (90 s) away: a sent
+  transaction can land up to a blockhash lifetime later, and spec §2 says a
+  match never settles after `expiresAt`, which the chain does not check yet;
+  (3) delegate check; (4) `settling` + attempt recorded, adapter call;
+  (5) `settled` + `confirmed` (tx hash), or `failed` + readable error.
+  Transient errors: exponential backoff 2 s doubling, capped at 60 s, at
+  most `WORKER_MAX_ATTEMPTS` (6) rounds, each restarting at (1); after the
+  last, one final on-chain check before failing. One match at a time, in
+  order (a retrying match holds the ones behind it).
+- **Never twice:** one worker; the record check before every send; the
+  adapter's own check; the program's `init` of the record; the unique
+  `settlements.match_id`.
+- **Listing sync.** Reads the program's `Listing` accounts (read-only),
+  upserts the Approved ones with a lot size from the reviewed
+  `config/solana-devnet.json` (none is guessed: a listing without one is
+  skipped), updates the status of mirrored ones that are no longer
+  Approved, and sets `chains.settlement_program` and `chains.quote_asset`
+  (checked against `Config.fee_mint`). Dry run by default; `--apply` writes
+  only when the config is marked reviewed; a lot size never changes while
+  the market has live orders. `listings.tx_hash` is left null: reading
+  accounts does not say which transaction changed them.
+- **Secrets in logs.** No part of `DATABASE_URL` is logged (the startup log
+  says "set, not shown"), and every logged error goes through
+  `redactSecrets` (URL, user, host, password, a private RPC URL and its
+  query values, the service key): driver errors can quote them.
+
 ## Not done yet
 
-- Settlement adapters and the worker (stub that refuses to run): matches stay
-  `pending`.
-- The on-chain delegate/allowance check before matching (spec §3.5): the
-  engine has `markStale`, the service does not call any chain yet.
+- EVM settlement adapters: matches on the EVM testnets stay `pending`.
+- **Busted trades.** When a match fails after matching (delegation revoked,
+  chain refusal, expiry), the engine had already filled both orders and
+  `filled_quantity` cannot decrease, so the counterparty's filled quantity
+  is lost to it. See "Spec edits needed".
+- A stale order never returns to the book (spec §5 allows
+  `stale → open`); its wallet can cancel it and place a new one.
+- Aggregate delegations: several open orders of one wallet on one mint are
+  each checked against the whole delegation, not against their sum.
 - The engine keeps every order it has seen since start in memory (terminal
   ones too); fine for testnet volumes, to prune before real traffic.
 - The match ids made before a restart are not reloaded into the engine's
   duplicate check; a repeated UUID v4 would hit the primary key, fail the
   transaction and restart the service.
-- No column records why an order was cancelled (wallet, self-trade
-  prevention, minimum notional) or the cancellation's signature; the API
-  response carries the reason. See "Spec edits needed".
-- The `pg` adapter, the advisory lock contention between two processes and
-  TLS to Supabase are not tested against a real Postgres server (no Docker or
-  local Supabase on the dev machine); PGlite is one session.
+- No column records why an order was cancelled or the cancellation's
+  signature.
+- Advisory lock contention between two processes is not tested against a
+  real server (PGlite is one session). The `pg` adapter and `set local role
+  service_role` were checked read-only against the remote database.
 
 ## Spec edits applied
 
@@ -286,3 +368,29 @@ These go to `niara-exchange-solana`, which owns the spec.
    (`by_wallet`, `self_trade_prevention`, `below_min_notional`) and
    `orders.cancel_signature` (the wallet's signed cancellation), in a later
    migration, so the audit trail shows who cancelled and why.
+6. **§2 `SettlementAdapter`.** `settle` returns `{ txHash, alreadySettled }`
+   (`alreadySettled`: the replay guard already existed, nothing was sent,
+   `txHash` is the transaction that created it), and the interface gains
+   `findSettlement(match): Promise<string | null>` (sends nothing).
+7. **§3.5, both legs.** The delegate check covers the buyer's USDT
+   delegation too: `settle` refuses a buyer whose payment account does not
+   delegate (`DelegateNotSet` / `InsufficientDelegation` on that leg). A buy
+   order is covered by `remaining / lot_size × limit_price`.
+8. **§3.4, token accounts.** Settlement uses the parties' associated token
+   accounts; the signed intent names wallets, not token accounts.
+9. **§2 and §5, expiry at settlement.** "A match never settles after
+   `expiresAt`" is enforced off-chain only until `settle` checks the window:
+   the worker does not send within 90 s of `expires_at` (a sent transaction
+   can land up to a blockhash lifetime later) and fails the match instead.
+10. **§5, failed matches after matching (busted trades).** Define what
+    happens to the two orders when a match fails after both were filled:
+    proposal, the defaulting order (uncovered delegation) is marked stale
+    and the other order gets its quantity back (open again, or a new order
+    for the remainder), which needs a schema change, since
+    `filled_quantity` cannot decrease today (e.g. a `reverted_quantity`
+    column, or reversal rows).
+11. **§5, settlement statuses.** Record the meanings: settlements `pending`
+    (created or waiting for a retry), `submitted` (handed to the chain),
+    `confirmed` (tx hash), `failed` (error); matches `settling` while an
+    attempt is in flight.
+

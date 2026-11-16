@@ -5,9 +5,9 @@
 Off-chain side of the Niara Exchange (design spec:
 `niara-exchange-solana/EXCHANGE-MULTICHAIN-DESIGN.md`, §2, §3.6, §5): wallets
 sign order intents, the order service admits them and the matching engine
-pairs `Equity` orders per (chain, asset), and a settlement worker (not written
-yet) will settle each match on-chain through a `SettlementAdapter`. Until
-then, matches are stored `pending` and **nothing is settled**.
+pairs `Equity` orders per (chain, asset), and the settlement worker settles
+each match on-chain through a `SettlementAdapter`. Only **Solana devnet** has
+an adapter; matches on the EVM testnets stay `pending`.
 
 Matching is off-chain and centralized by design; settlement is atomic and
 on-chain. This is not a decentralized exchange.
@@ -29,14 +29,15 @@ Supabase project `niara-exchange-dev` (Postgres 17). Migrations live in
 | Migration | Remote `niara-exchange-dev` |
 |---|---|
 | `20261116120000_exchange_schema` | **Applied** (by the founder, through the Supabase dashboard tooling) |
-| `20261116130000_fk_indexes` | **Not applied.** Indexes covering `matches (chain_id, asset)` and `settlements (match_id, chain_id)`; the founder applies it |
+| `20261116130000_fk_indexes` | **Applied** (by the founder; `matches_chain_asset_idx` seen on the remote on 2026-11-16) |
 
 - The obsolete September prototype was moved to the schema
   `legacy_prototype_2026_09`, outside the API. This repo only uses `public`.
 - **Never apply migrations to the remote from this repo** (no
-  `supabase db push`, no migration tooling against the project, no SQL
-  writes). Write the migration here, test it on PGlite, and hand it to the
-  founder.
+  `supabase db push`, no migration tooling against the project). Schema
+  changes are written here, tested on PGlite and applied by the founder.
+- **Data writes** to `niara-exchange-dev` go through the order service, its
+  worker and the listing sync (`--apply`), as `service_role`.
 
 ## Order service
 
@@ -47,6 +48,7 @@ Supabase project `niara-exchange-dev` (Postgres 17). Migrations live in
 | `POST /v1/orders` | `{ intent, signature }` | Submit a signed order intent (Solana `signMessage` text or EIP-712) |
 | `POST /v1/orders/cancel` | `{ cancel, signature }` | Cancel an order with a signed cancellation (by chain, wallet and nonce) |
 | `GET /v1/books/:chain/:asset` | | Public book: price levels only |
+| `GET /v1/matches/:id` | | A match's settlement status and tx hash (no wallets) |
 | `GET /health` | | Liveness, with the testnet notice |
 
 Amounts are decimal strings in JSON (base units: quantity in asset base
@@ -72,6 +74,35 @@ server-only: the service refuses to start if a `NEXT_PUBLIC_*` variable names
 or contains a server secret. It connects to Postgres directly and writes as
 `service_role`; it does not use the Supabase service role key.
 
-Not tested against a real Postgres server yet (no Docker or local Supabase on
-the dev machine): the tests run the service on PGlite with the real
-migrations.
+The settlement worker runs in the same process (so the lock also makes it the
+only worker). It needs the settlement operator's keypair **path**
+(`SOLANA_OPERATOR_KEYPAIR`, a file outside the repo, mode 600); without it set
+`WORKER_ENABLED=off` and matches stay `pending`.
+
+Tests run on PGlite with the real migrations and a mocked Solana RPC; the
+`pg` adapter was checked read-only against the remote database.
+
+## Solana devnet
+
+Program `B311xH3PcEx86gdRbuinrGrh1r9G2qzjDCji8uc6eD9v` (IDL vendored in
+`src/solana/idl`). Devnet only: every Solana entry point checks the RPC's
+genesis hash.
+
+```bash
+# 1. Mirror the program's listings (read-only on-chain). Dry run first; --apply
+#    writes, and only once config/solana-devnet.json is marked "reviewed": true.
+node --env-file=.env scripts/sync-solana-listings.ts
+node --env-file=.env scripts/sync-solana-listings.ts --apply
+
+# 2. Run the service and its worker (single instance).
+npm start
+
+# 3. End-to-end on devnet, in another terminal (writes to devnet: one approval
+#    transaction and one settle). Log in ~/niara-logs/.
+node --env-file=.env scripts/e2e-devnet.ts
+```
+
+Before matching and before settling, the service checks on-chain that each
+order's wallet delegates enough to the program's vault PDA and holds enough
+(sellers: the asset; buyers: USDT). An uncovered resting order is marked
+`stale`.
