@@ -7,5 +7,8 @@ export default defineConfig({
     pool: "forks",
     maxWorkers: 1,
     fileParallelism: false,
+    // PGlite (Postgres in WASM) takes about a minute to start in a vitest worker on
+    // this machine; each test file that needs it starts one instance in beforeAll.
+    hookTimeout: 240_000,
   },
 });

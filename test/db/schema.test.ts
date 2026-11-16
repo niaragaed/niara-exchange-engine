@@ -294,6 +294,35 @@ describe("settlements", () => {
   });
 });
 
+describe("foreign key indexes (20261116130000_fk_indexes)", () => {
+  it("every foreign key of matches and settlements is covered by an index on its leading columns", async () => {
+    // For each foreign key, look for an index whose first columns are the key's columns.
+    const r = await db.query<{ tbl: string; fk: string; covered: boolean }>(
+      `select c.conrelid::regclass::text as tbl, c.conname as fk,
+              exists (
+                select 1 from pg_index i
+                 where i.indrelid = c.conrelid and i.indpred is null
+                   and (i.indkey::int2[])[0:array_length(c.conkey, 1) - 1] = c.conkey
+              ) as covered
+         from pg_constraint c
+        where c.contype = 'f' and c.conrelid in ('public.matches'::regclass, 'public.settlements'::regclass)
+        order by 1, 2`,
+    );
+    expect(r.rows.length).toBeGreaterThanOrEqual(5);
+    expect(r.rows.filter((row) => !row.covered)).toEqual([]);
+  });
+
+  it("creates the two indexes with the foreign keys' columns", async () => {
+    const r = await db.query<{ indexname: string; indexdef: string }>(
+      `select indexname, indexdef from pg_indexes
+        where indexname in ('matches_chain_asset_idx', 'settlements_match_chain_idx') order by 1`,
+    );
+    expect(r.rows.map((i) => i.indexname)).toEqual(["matches_chain_asset_idx", "settlements_match_chain_idx"]);
+    expect(r.rows[0]!.indexdef).toMatch(/\(chain_id, asset\)/);
+    expect(r.rows[1]!.indexdef).toMatch(/\(match_id, chain_id\)/);
+  });
+});
+
 describe("row level security", () => {
   it("is enabled on every table", async () => {
     const r = await db.query<{ relname: string; relrowsecurity: boolean }>(
