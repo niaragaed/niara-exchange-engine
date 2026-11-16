@@ -3,7 +3,8 @@
 Decisions this repo makes on top of the spec
 (`niara-exchange-solana/EXCHANGE-MULTICHAIN-DESIGN.md`). The spec is the
 source of truth; where a decision here needs the spec to change, it is
-listed under "Spec edits proposed" at the end.
+listed under "Spec edits needed" at the end. The first round of proposals is
+now in the spec (see "Spec edits applied").
 
 > Testnet only: no real assets, no real money, no regulatory authorization.
 
@@ -56,9 +57,39 @@ side, asset, quantity, lot size, limit price, payment asset (USDT), nonce
   same as the P2P deal limit `MAX_DEAL_DURATION_SECS`).
 - **Nonce**: unique per (chain, wallet) (`orders` unique constraint), so a
   signed intent can enter the book only once.
-- `admitOrderIntent` is the core of the server function that inserts orders.
-  Market checks (approved equity, lot size, minimum notional) stay in the
-  engine.
+- `admitOrderIntent` is the order service's gate (below). Market checks
+  (approved equity, lot size, minimum notional) stay in the engine.
+
+## Cancellation (`src/intents/cancel.ts`)
+
+A wallet cancels one of its orders by signing the order's chain, settlement
+program/contract, wallet and **nonce**. The nonce is unique per
+(chain, wallet), so it names exactly one order, ever: the cancellation needs
+no nonce or expiry of its own, and replaying it only re-cancels a cancelled
+order.
+
+- **Solana**: `signMessage` text, verified like the order intent (rebuilt from
+  the structured cancellation, strict ed25519). Its first line differs from
+  the order intent's, so neither text can be taken for the other:
+
+  ```
+  Niara Exchange cancel order v1
+  TESTNET ONLY: no real assets, no real money.
+
+  Chain: solana:EtWTRABZaYq6iMfeYKouRu166VU2xqa1
+  Program: <program id>
+  Wallet: <wallet>
+  Order nonce: <32 lowercase hex chars>
+  ```
+- **EVM**: EIP-712 with the order intent's domain and
+  `CancelOrder(address wallet,bytes16 nonce)`; same signature rules (65 bytes,
+  `v` 27/28, low `s`). The digest never equals an order intent's.
+- `admitCancelIntent` checks the chain configuration (program) and the
+  signature; the service then looks the order up by (chain, wallet, nonce).
+- **Off-chain only.** The service takes the order out of the book. Until
+  `settle` verifies intents on-chain (spec §3.6), the on-chain guarantee that
+  a cancelled order never settles is the wallet revoking its delegate or
+  allowance.
 
 ## Matching engine (`src/engine`)
 
@@ -82,7 +113,19 @@ side, asset, quantity, lot size, limit price, payment asset (USDT), nonce
 - `markStale` takes an order out of the book when the on-chain delegate or
   allowance no longer covers it (spec §3.5). The on-chain check runs outside
   the engine.
-- Minimum order notional (spec §9.12 item 1) is checked at order entry.
+- **Minimum order notional** (spec §9.12 item 1), per chain: an order below
+  it is refused at entry; a match below it is never made; a remainder below
+  it, valued at its own limit price, is cancelled (`below_min_notional`)
+  instead of resting. When the next match would fall below the minimum, the
+  order whose remainder limits that match is cancelled: the resting order
+  (matching then continues with the next one; this happens to an order left
+  below a raised minimum) or the incoming order (matching stops; a buyer whose
+  remainder is worth less than the minimum at the best ask). The engine never
+  skips the best price to reach a larger match.
+- **Restart**: `restore` rebuilds the books from the non-terminal orders in
+  their original `seq`, with their fills, on a fresh engine; `exportState`
+  returns everything that decides future behavior (markets, each book's
+  priority order, live orders, next sequences).
 
 ## Schema (`supabase/migrations`)
 
@@ -97,75 +140,149 @@ side, asset, quantity, lot size, limit price, payment asset (USDT), nonce
 - RLS on every table. `anon`/`authenticated` read `chains`, approved
   equity/currency listings, and the price-level columns of live orders
   (`order_book` view, `security_invoker`), never wallets, ids, nonces or
-  signatures. They write nothing. The service role (the signature-verifying
-  server function and the worker) inserts and updates; nobody deletes.
-- Tested against PGlite 0.4.6 (Postgres 17.5 in WASM, in process). The
-  migration is not applied to any Supabase project.
+  signatures. They write nothing. The service role (the order service, which
+  verifies the signatures, and later the worker) inserts and updates; nobody
+  deletes.
+- Tested against PGlite 0.4.6 (Postgres 17.5 in WASM, in process).
+- `20261116120000_exchange_schema` is applied to the remote
+  `niara-exchange-dev` (by the founder, through the Supabase dashboard
+  tooling, not from this repo). `20261116130000_fk_indexes` (indexes covering
+  the composite foreign keys `matches (chain_id, asset)` and
+  `settlements (match_id, chain_id)`) is written and **not applied**; the
+  founder applies it. This repo never applies migrations to the remote.
+
+## Order service (`src/service`)
+
+- **One Node process, one instance.** Hono HTTP API: `POST /v1/orders`
+  (`{ intent, signature }`), `POST /v1/orders/cancel`
+  (`{ cancel, signature }`), `GET /v1/books/:chain/:asset`, `GET /health`.
+  Amounts are decimal strings in JSON.
+- **Single instance, enforced.** On start the service takes a session-level
+  Postgres advisory lock (`pg_try_advisory_lock(hashtextextended(
+  'niara-exchange-engine/order-service', 0))`) on its only database
+  connection; a second instance finds it taken and refuses to start. The lock
+  lives as long as the connection: if the connection drops, the process exits
+  (another instance may already hold the lock) and its supervisor restarts
+  it. The transaction pooler (Supabase port 6543) cannot hold a session lock
+  and is refused by the configuration.
+- **One transaction per state change.** Each change runs under one
+  in-process mutex and in one transaction as `service_role`: the database
+  checks (nonce, open orders), the engine call, then the order, its matches
+  and every order it changed are written together. The engine is in memory,
+  so a failed write leaves it ahead of the database: the service then answers
+  503 to everything and the process exits; the restart rebuilds from the
+  database, and the same signed intent can be submitted again (its nonce was
+  not consumed).
+- **Server role.** The service connects to Postgres directly and runs every
+  transaction after `set local role service_role`, so the migration's grants
+  apply to it (insert and update, never delete). The login role must be a
+  member of `service_role` (checked on start). The Supabase service role key
+  (a REST credential) is not used.
+- **Sequences.** `orders.seq` and `matches.seq` store the engine's arrival
+  and match sequences (`overriding system value`), so the database and the
+  engine share one time priority and the next sequences continue from the
+  stored maxima after a restart.
+- **Addresses.** The engine works with checksummed EVM addresses (as
+  admission returns them). `orders.asset` and `matches.asset` reuse the
+  listing's stored spelling, because they reference `listings` by foreign key.
+- **Abuse limits.** Nonce unique per (chain, wallet), checked before the
+  engine and by the unique constraint (409); at most
+  `MAX_OPEN_ORDERS_PER_WALLET` non-terminal, unexpired orders per wallet and
+  chain (429); request bodies above `MAX_BODY_BYTES` refused before parsing
+  (413). Bad signatures get 401, other admission refusals 422.
+- **Public book**: price levels of matchable orders only (an order within the
+  settlement margin of its expiry is hidden before the sweep), never wallets,
+  order ids or nonces.
+- **Housekeeping.** Timers sweep expired orders (`EXPIRY_SWEEP_SECS`) and
+  re-read chains and listings (`MARKET_REFRESH_SECS`); a lot size change while
+  orders rest is refused and logged.
+- **Nothing is settled.** Matches are stored `pending`; the settlement worker
+  is still a stub.
+
+## Configuration (`src/config.ts`, `.env.example`)
+
+Environment variables only (`npm start` runs `node --env-file=.env`):
+`DATABASE_URL` (required, secret), `HOST`, `PORT`, `MAX_BODY_BYTES`,
+`MAX_OPEN_ORDERS_PER_WALLET`, `SETTLEMENT_MARGIN_SECS`, `EXPIRY_SWEEP_SECS`,
+`MARKET_REFRESH_SECS`. The service refuses to start when a `NEXT_PUBLIC_*`
+variable names a server secret (service role, password, database URL, private
+or operator key, JWT secret) or contains the database URL, its password or
+`SUPABASE_SERVICE_ROLE_KEY`. Logs never print the database password.
 
 ## Tooling
 
 TypeScript 7.0.2 (strict), vitest 5.0.5 with one worker, fast-check 4.10.2,
-@noble/ed25519 3.2.0, @scure/base 2.4.0, viem 2.57.14, all pinned exactly.
+@noble/ed25519 3.2.0, @scure/base 2.4.0, viem 2.57.14, pg 8.23.1,
+hono 4.13.16, @hono/node-server 2.1.6 (the first release with the fixes for
+GHSA-qv5m-9pm6-hqp3 and GHSA-jpvv-r467-5p4w), all pinned exactly; new
+packages are at least two weeks old when added. vitest's hook timeout is
+240 s: PGlite takes up to a minute to start in a worker on the dev machine.
 `.npmrc` sets `legacy-peer-deps` because npm 10 crashes resolving vitest 5's
 optional peer chain; `vite` and `@types/node` are pinned directly instead.
 
 ## Not done yet
 
-- **Signed cancellation**: the engine cancels for an authenticated wallet,
-  but the message a wallet signs to cancel (by nonce) is not defined yet.
-- The server function itself (HTTP endpoint and database writes) and the
-  engine ↔ database glue (rebuilding books from `orders` on start).
-- Settlement adapters and the worker (stub that refuses to run).
-- A partial fill can leave a remainder, and produce a match, below the
-  minimum order notional.
+- Settlement adapters and the worker (stub that refuses to run): matches stay
+  `pending`.
+- The on-chain delegate/allowance check before matching (spec §3.5): the
+  engine has `markStale`, the service does not call any chain yet.
+- The engine keeps every order it has seen since start in memory (terminal
+  ones too); fine for testnet volumes, to prune before real traffic.
+- The match ids made before a restart are not reloaded into the engine's
+  duplicate check; a repeated UUID v4 would hit the primary key, fail the
+  transaction and restart the service.
+- No column records why an order was cancelled (wallet, self-trade
+  prevention, minimum notional) or the cancellation's signature; the API
+  response carries the reason. See "Spec edits needed".
+- The `pg` adapter, the advisory lock contention between two processes and
+  TLS to Supabase are not tested against a real Postgres server (no Docker or
+  local Supabase on the dev machine); PGlite is one session.
 
-## Spec edits proposed
+## Spec edits applied
+
+The nine edits proposed in the first round are in the spec
+(`niara-exchange-solana`, commits `6b04af5` to `c6fbfff`), grouped here by spec commit:
+
+| Proposal | Spec commit |
+|---|---|
+| §3.5: the off-chain service, not the engine, checks delegates and marks orders stale | `6b04af5` |
+| §3.6: intent format (signed fields, Solana text, EIP-712 domain and type); OpenZeppelin `ECDSA` instead of a bare `ecrecover` | `74e2b99` |
+| §3.6: `register_intent` (two text intents do not fit one transaction) and cumulative filled quantity per intent, as the on-chain milestone; the operator stays a documented trust assumption until then | `56ec9f7` |
+| §2: `Match` defined | `2377ef8` |
+| §5: the migration's schema and units | `afb48c7` |
+| §9.12 item 2: validity window, 17-byte `SettlementRecord`, closing only after on-chain intent verification | `b8949a8` |
+| §9.12 item 1: minimum checked at admission and at match time, remainder below it cancelled | `c6fbfff` |
+
+## Spec edits needed
 
 These go to `niara-exchange-solana`, which owns the spec.
 
-1. **§5 schema**: replace the minimal schema with the one in the migration
-   (chains table; lot-based units; `filled_quantity`, `seq`, `nonce`,
-   `expires_at`, `intent_version` on orders; `payment_amount`, `maker_order`,
-   `expires_at` on matches; status enums; RLS summary). State the price unit:
-   USDT base units per lot.
-2. **§2 `Match`**: the spec names `Match` without defining it. Propose the
-   fields of `src/engine/types.ts` (`id` = UUID v4 = `match_id`, buyer,
-   seller, `quantity` = `asset_amount`, `paymentAmount` = `payment_amount`,
-   `expiresAt`).
-3. **§3.6 intent format**: record the signed fields, the Solana text and the
-   EIP-712 domain and type above, and the low-s / strict-ed25519 rules.
-4. **§3.6 Solana on-chain verification does not fit in one `settle`
-   transaction.** Two text intents in Ed25519 instructions are about 1,330
-   bytes (2 × (552 + 64 + 32 + 16)), over the 1,232-byte transaction limit
-   before `settle`'s own accounts. Proposal: a `register_intent` instruction
-   verifies one intent (its own transaction) and creates an
-   `["intent", wallet, nonce]` account; `settle` reads the two intent
-   accounts. The alternative is a compact binary message, which wallets show
-   as unreadable bytes.
-5. **§3.6 cumulative fills.** Checking each match against the signed intents
-   does not stop the operator from filling one intent several times through
-   different match ids, as long as the delegate/allowance covers it (and with
-   aggregate approvals, §3.5, it can). On-chain verification needs a per-intent
-   filled amount (the `["intent", wallet, nonce]` account above on Solana, a
-   `filled[intentHash]` mapping on EVM). That account costs rent too (§9.12).
-6. **§9.12 item 2, the window**: the signed timestamp is the intent's
-   `expiresAt`; a match expires with the earlier of its two intents; the
-   maximum window is per chain (`max_intent_validity_secs`, proposed
-   30 days), enforced off-chain now and later on-chain as a `Config` field
-   changed through the timelock. `settle` would check
-   `now < expires_at <= now + window`. `SettlementRecord` would store
-   `expires_at` (9 → 17 bytes: the rent figure must be measured again), and
-   `close_settlement` would accept records with
-   `now >= expires_at + margin`. Closing is replay-safe only once `settle`
-   verifies the signed intents on-chain; until then the operator supplies
-   `expires_at` and could replay a closed id.
-7. **§9.12 item 1**: say whether the minimum applies to orders, to matches,
-   or to both. Orders are checked at entry here; partial fills can still
-   produce smaller matches.
-8. **§3.5 "the matching engine must check `delegate` … on-chain"**: the
-   engine is pure; the off-chain service does the check (before matching and
-   before settling) and marks the order stale (`markStale`). Suggest
-   rewording to "the off-chain service".
-9. **§3.6 "EVM: verified with `ecrecover`"**: suggest "EIP-712, verified
-   with OpenZeppelin `ECDSA` (low-s, `v` 27/28)", since a bare `ecrecover`
-   accepts malleable signatures.
+1. **§3.6, cancellation format.** Record the signed cancellation (Solana text
+   and EIP-712 `CancelOrder(address wallet,bytes16 nonce)` above), bound to
+   chain, program/contract, wallet and the order's nonce, and that it is
+   enforced off-chain only. The on-chain milestone then needs an on-chain
+   cancel: once an intent is registered (`["intent", wallet, nonce]` on
+   Solana) or carried with `settle` (EVM), an off-chain cancellation does not
+   stop the operator from settling it. Proposal: a wallet-signed
+   `cancel_intent` that marks the intent account cancelled on Solana, and a
+   `cancelled[wallet][nonce]` mapping set by the wallet on EVM; until then,
+   revoking the delegate or allowance is the wallet's on-chain guarantee.
+2. **§5, "a server function".** Orders (and cancellations) enter through a
+   **single-instance Node order service** (`niara-exchange-engine`,
+   `src/service`), not a Supabase function: it connects to Postgres directly,
+   writes as `service_role`, and holds a Postgres advisory lock so that only
+   one instance matches. Suggest replacing "a server function" with that, and
+   noting that the matching engine's state is rebuilt from `orders` on start.
+3. **§5, `seq`.** `orders.seq` and `matches.seq` are assigned by the engine
+   and stored as is (they are the engine's time priority and match sequence),
+   not by the database.
+4. **§9.12 item 1, which order is cancelled.** "A match below the minimum is
+   not made" leaves open what happens to the two orders. Proposal: the order
+   whose remainder limits the match is cancelled (the resting one, and
+   matching continues; or the incoming one, and matching stops); the engine
+   never skips the best price to reach a larger match. This covers resting
+   orders left below a raised minimum.
+5. **§5, cancellation audit trail.** Add `orders.cancel_reason`
+   (`by_wallet`, `self_trade_prevention`, `below_min_notional`) and
+   `orders.cancel_signature` (the wallet's signed cancellation), in a later
+   migration, so the audit trail shows who cancelled and why.

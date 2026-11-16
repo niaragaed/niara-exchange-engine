@@ -13,7 +13,7 @@ export async function verifyIntentSignature(intent: OrderIntent, signature: stri
     : verifyEvmIntent(intent, signature);
 }
 
-/** A row of the `chains` table, as the server function reads it. */
+/** A row of the `chains` table, as the order service reads it. */
 export interface ChainConfig {
   chain: ChainId;
   /** `chains.settlement_program`; null until deployed. */
