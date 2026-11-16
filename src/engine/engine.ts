@@ -22,6 +22,12 @@ import type { Market, Match, OrderInput, Side } from "./types.ts";
  *   order stays. A wallet therefore never matches itself and the book never crosses.
  * - An order is matchable only while `expiresAt - now > settlementMarginSecs`: a match
  *   must leave time to settle before the earlier of its two expiries.
+ * - Minimum notional (spec §9.12 item 1), per market: an order below it is refused at
+ *   entry; a match below it is never made; a remainder below it (valued at its own
+ *   limit price) is cancelled instead of resting. When the next match would fall below
+ *   the minimum, the order whose remainder limits that match is cancelled: the resting
+ *   order (then matching continues with the next one) or the incoming order (then
+ *   matching stops). Skipping to a worse price is never done.
  */
 
 export type RejectReason =
@@ -41,7 +47,7 @@ export type CancelRejectReason = "unknown_order" | "not_owner" | "not_live";
 
 export type OrderStatus = "open" | "partially_filled" | "filled" | "cancelled" | "expired" | "stale";
 
-export type CancelReason = "by_wallet" | "self_trade_prevention";
+export type CancelReason = "by_wallet" | "self_trade_prevention" | "below_min_notional";
 
 export interface OrderView extends OrderInput {
   /** Arrival position in the engine, from 1: the time in price-time priority. */
@@ -210,6 +216,7 @@ export class MatchingEngine {
     const matches: Match[] = [];
     const opposite = input.side === "buy" ? book.asks : book.bids;
 
+    const market = this.markets.get(key)!;
     while (remainingOf(taker) > 0n) {
       const maker = opposite[0];
       if (!maker) break;
@@ -231,6 +238,16 @@ export class MatchingEngine {
         break;
       }
       const quantity = minBig(remainingOf(taker), remainingOf(maker));
+      if (notional(quantity, maker.input.lotSize, maker.input.limitPrice) < market.minOrderNotional) {
+        // The order whose remainder limits this match is below the minimum.
+        if (remainingOf(maker) === quantity) {
+          opposite.shift();
+          this.cancelBelowMin(maker, events);
+          continue;
+        }
+        this.cancelBelowMin(taker, events);
+        break;
+      }
       const match = this.makeMatch(taker, maker, quantity);
       matches.push(match);
       events.push({ type: "match", match });
@@ -242,6 +259,10 @@ export class MatchingEngine {
         events.push({ type: "order_filled", orderId: maker.input.id });
       } else {
         maker.status = "partially_filled";
+        if (this.belowMin(maker, market)) {
+          opposite.shift();
+          this.cancelBelowMin(maker, events);
+        }
       }
     }
 
@@ -249,6 +270,8 @@ export class MatchingEngine {
       if (remainingOf(taker) === 0n) {
         taker.status = "filled";
         events.push({ type: "order_filled", orderId: taker.input.id });
+      } else if (this.belowMin(taker, market)) {
+        this.cancelBelowMin(taker, events);
       } else {
         taker.status = taker.filled > 0n ? "partially_filled" : "open";
         insertSorted(input.side, input.side === "buy" ? book.bids : book.asks, taker);
@@ -329,9 +352,20 @@ export class MatchingEngine {
     if (input.quantity <= 0n) return "invalid_quantity";
     if (input.limitPrice <= 0n) return "invalid_price";
     if (input.quantity % market.lotSize !== 0n) return "not_whole_lots";
-    if ((input.quantity / market.lotSize) * input.limitPrice < market.minOrderNotional) return "below_min_notional";
+    if (notional(input.quantity, market.lotSize, input.limitPrice) < market.minOrderNotional) return "below_min_notional";
     if (!Number.isSafeInteger(input.expiresAt) || input.expiresAt - now <= this.margin) return "expired";
     return null;
+  }
+
+  /** True when the order's remainder, valued at its own limit price, is below the minimum. */
+  private belowMin(o: OrderState, market: Market): boolean {
+    return notional(remainingOf(o), o.input.lotSize, o.input.limitPrice) < market.minOrderNotional;
+  }
+
+  /** Cancels an order's remainder (already out of the book) for being below the minimum. */
+  private cancelBelowMin(o: OrderState, events: EngineEvent[]): void {
+    o.status = "cancelled";
+    events.push({ type: "order_cancelled", orderId: o.input.id, reason: "below_min_notional", remaining: remainingOf(o) });
   }
 
   private live(o: OrderState, now: number): boolean {
@@ -378,6 +412,11 @@ export class MatchingEngine {
 
 function view(o: OrderState): OrderView {
   return { ...o.input, seq: o.seq, filledQuantity: o.filled, remaining: remainingOf(o), status: o.status };
+}
+
+/** USDT base units of `quantity` at `price` per lot. */
+function notional(quantity: bigint, lotSize: bigint, price: bigint): bigint {
+  return (quantity / lotSize) * price;
 }
 
 function minBig(a: bigint, b: bigint): bigint {

@@ -19,13 +19,20 @@ const MARKETS = [
 ] as const;
 // A P2P-class market: every order on it must be refused.
 const BOND = { chain: CHAIN, asset: "TEST-BOND" } as const;
+// Minimum notionals (spec §9.12 item 1), in USDT base units: MARKETS[2] has a fixed
+// minimum; MARKETS[1]'s minimum is changed at random by "setMin" (a resting order can
+// then be left below it). Notionals here are lots × price, from 1 to 36.
+const FIXED_MIN = 5n;
+const VARIABLE_MIN_MARKET = 1;
+const MINS = [0n, 3n, 8n] as const;
 
 type Command =
   | { kind: "place"; market: number; wallet: number; side: Side; lots: number; price: number; ttl: number }
   | { kind: "cancel"; pick: number; byOwner: boolean }
   | { kind: "stale"; pick: number }
   | { kind: "tick"; secs: number }
-  | { kind: "expire" };
+  | { kind: "expire" }
+  | { kind: "setMin"; pick: number };
 
 const commandArb: fc.Arbitrary<Command> = fc.oneof(
   {
@@ -44,12 +51,14 @@ const commandArb: fc.Arbitrary<Command> = fc.oneof(
   { weight: 1, arbitrary: fc.record({ kind: fc.constant("stale" as const), pick: fc.nat() }) },
   { weight: 1, arbitrary: fc.record({ kind: fc.constant("tick" as const), secs: fc.integer({ min: 1, max: 300 }) }) },
   { weight: 1, arbitrary: fc.record({ kind: fc.constant("expire" as const) }) },
+  { weight: 1, arbitrary: fc.record({ kind: fc.constant("setMin" as const), pick: fc.nat({ max: MINS.length - 1 }) }) },
 );
 
 interface Run {
   /** Every engine output, in order: events, and cancel results (accepted or not). */
   events: (EngineEvent | CancelResult)[];
-  matches: { match: Match; at: number }[];
+  /** Each match with the time and its market's minimum notional when it was made. */
+  matches: { match: Match; at: number; min: bigint }[];
   placed: OrderInput[];
   engine: MatchingEngine;
   crossedAfter: number[];
@@ -57,10 +66,13 @@ interface Run {
 
 function run(commands: readonly Command[], seed: number): Run {
   const engine = new MatchingEngine({ newMatchId: seededUuidV4(seed), settlementMarginSecs: MARGIN });
-  for (const m of MARKETS) engine.upsertMarket(market({ chain: m.chain, asset: m.asset }));
+  MARKETS.forEach((m, i) =>
+    engine.upsertMarket(market({ chain: m.chain, asset: m.asset, minOrderNotional: i === 2 ? FIXED_MIN : 0n })),
+  );
   engine.upsertMarket(market({ chain: BOND.chain, asset: BOND.asset, assetClass: "fixed_income" }));
 
   const out: Run = { events: [], matches: [], placed: [], engine, crossedAfter: [] };
+  const mins: bigint[] = MARKETS.map((_, i) => (i === 2 ? FIXED_MIN : 0n));
   let now = NOW;
   let n = 0;
   commands.forEach((c, step) => {
@@ -83,7 +95,7 @@ function run(commands: readonly Command[], seed: number): Run {
         out.events.push(...r.events);
         if (r.accepted) {
           out.placed.push(input);
-          for (const match of r.matches) out.matches.push({ match, at: now });
+          for (const match of r.matches) out.matches.push({ match, at: now, min: mins[c.market] ?? 0n });
         }
         break;
       }
@@ -104,6 +116,12 @@ function run(commands: readonly Command[], seed: number): Run {
       case "expire":
         out.events.push(...engine.expire(now));
         break;
+      case "setMin": {
+        const m = MARKETS[VARIABLE_MIN_MARKET]!;
+        mins[VARIABLE_MIN_MARKET] = MINS[c.pick]!;
+        engine.upsertMarket(market({ chain: m.chain, asset: m.asset, minOrderNotional: MINS[c.pick]! }));
+        break;
+      }
     }
     for (const m of [...MARKETS, BOND]) {
       const b = engine.book(m.chain, m.asset);
@@ -245,6 +263,30 @@ describe("matching engine invariants (fast-check)", () => {
         expect(strip(run(commands, seed + 1))).toEqual(strip(run(commands, seed)));
       }),
       { numRuns: 100 },
+    );
+  });
+
+  it("minimum notional: no match below the market's minimum, and no remainder below a fixed minimum rests", () => {
+    fc.assert(
+      fc.property(commandsArb, fc.nat(), (commands, seed) => {
+        const r = run(commands, seed);
+        for (const { match, min } of r.matches) expect(match.paymentAmount).toBeGreaterThanOrEqual(min);
+        const fixed = MARKETS[2];
+        for (const input of r.placed) {
+          const o = orderOf(r, input.id);
+          if (o.chain !== fixed.chain || o.asset !== fixed.asset) continue;
+          if (o.status === "open" || o.status === "partially_filled") {
+            expect((o.remaining / o.lotSize) * o.limitPrice).toBeGreaterThanOrEqual(FIXED_MIN);
+          }
+        }
+        // Every below-minimum cancellation leaves its order out of every book.
+        for (const e of r.events) {
+          if ("type" in e && e.type === "order_cancelled" && e.reason === "below_min_notional") {
+            expect(orderOf(r, e.orderId).status).toBe("cancelled");
+          }
+        }
+      }),
+      PARAMS,
     );
   });
 });
