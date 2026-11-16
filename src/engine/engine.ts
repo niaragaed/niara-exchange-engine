@@ -90,6 +90,35 @@ export interface BookSnapshot {
   asks: PriceLevel[];
 }
 
+/** A non-terminal order as persisted, to rebuild the books after a restart. */
+export interface RestoredOrder extends OrderInput {
+  /** Its original arrival position (`orders.seq`). */
+  seq: number;
+  filledQuantity: bigint;
+  status: "open" | "partially_filled" | "stale";
+}
+
+export interface RestoreInput {
+  /** Every non-terminal order, in increasing `seq`. */
+  orders: readonly RestoredOrder[];
+  /** Highest `seq` ever given to an order (0 if none): the next order gets the one after. */
+  lastOrderSeq: number;
+  /** Highest match `sequence` ever made (0 if none). */
+  lastMatchSeq: number;
+}
+
+/** Everything that decides the engine's future behavior, for comparing two engines. */
+export interface EngineState {
+  nextOrderSeq: number;
+  nextMatchSeq: number;
+  /** Sorted by (chain, asset). */
+  markets: Market[];
+  /** Order ids of each book in priority order, sorted by (chain, asset). */
+  books: { chain: ChainId; asset: string; bids: string[]; asks: string[] }[];
+  /** Non-terminal orders (open, partially filled, stale), by seq. */
+  orders: OrderView[];
+}
+
 export interface EngineOptions {
   /** Returns a fresh UUID v4 for each match (production: `randomMatchId`). */
   newMatchId: () => string;
@@ -329,6 +358,89 @@ export class MatchingEngine {
       }
     }
     return events;
+  }
+
+  /**
+   * Rebuilds the books after a restart from the persisted non-terminal orders, in their
+   * original sequence, keeping each order's seq (its time priority) and fill. Only on a
+   * fresh engine, after its markets were upserted. Orders are restored as they were,
+   * whatever the market's status or the clock: expiry is swept afterwards as usual.
+   */
+  restore(input: RestoreInput): void {
+    if (this.orders.size > 0 || this.nextSeq !== 1 || this.nextMatchSeq !== 1) {
+      throw new EngineInvariantError("restore needs a fresh engine");
+    }
+    for (const v of [input.lastOrderSeq, input.lastMatchSeq]) {
+      if (!Number.isSafeInteger(v) || v < 0) throw new EngineInvariantError("last sequences must be non-negative integers");
+    }
+    let previousSeq = 0;
+    const restored: OrderState[] = [];
+    for (const r of input.orders) {
+      const fail = (why: string) => new EngineInvariantError(`cannot restore order ${r.id}: ${why}`);
+      if (this.orders.has(r.id) || restored.some((o) => o.input.id === r.id)) throw fail("duplicate id");
+      if (!Number.isSafeInteger(r.seq) || r.seq <= previousSeq || r.seq > input.lastOrderSeq) {
+        throw fail("seq out of order or above the last order seq");
+      }
+      previousSeq = r.seq;
+      const market = this.markets.get(marketKey(r.chain, r.asset));
+      if (!market) throw fail("unknown market");
+      if (r.lotSize !== market.lotSize) throw fail("lot size differs from the market's");
+      if (r.quantity <= 0n || r.quantity % r.lotSize !== 0n || r.limitPrice <= 0n) throw fail("invalid amounts");
+      if (r.filledQuantity < 0n || r.filledQuantity >= r.quantity || r.filledQuantity % r.lotSize !== 0n) {
+        throw fail("filled quantity must be whole lots below the quantity");
+      }
+      if ((r.status === "open") !== (r.filledQuantity === 0n) && r.status !== "stale") {
+        throw fail("status does not match the filled quantity");
+      }
+      const order: OrderInput = {
+        id: r.id,
+        chain: r.chain,
+        asset: r.asset,
+        paymentAsset: r.paymentAsset,
+        wallet: r.wallet,
+        side: r.side,
+        quantity: r.quantity,
+        limitPrice: r.limitPrice,
+        lotSize: r.lotSize,
+        expiresAt: r.expiresAt,
+      };
+      restored.push({ input: order, seq: r.seq, filled: r.filledQuantity, status: r.status });
+    }
+    for (const o of restored) {
+      this.orders.set(o.input.id, o);
+      if (o.status !== "stale") {
+        const book = this.books.get(marketKey(o.input.chain, o.input.asset))!;
+        insertSorted(o.input.side, o.input.side === "buy" ? book.bids : book.asks, o);
+      }
+    }
+    this.nextSeq = input.lastOrderSeq + 1;
+    this.nextMatchSeq = input.lastMatchSeq + 1;
+  }
+
+  exportState(): EngineState {
+    const byKey = <T extends { chain: ChainId; asset: string }>(a: T, b: T) =>
+      marketKey(a.chain, a.asset) < marketKey(b.chain, b.asset) ? -1 : 1;
+    const books: EngineState["books"] = [];
+    for (const [key, b] of this.books) {
+      const m = this.markets.get(key)!;
+      books.push({
+        chain: m.chain,
+        asset: m.asset,
+        bids: b.bids.map((o) => o.input.id),
+        asks: b.asks.map((o) => o.input.id),
+      });
+    }
+    const orders = [...this.orders.values()]
+      .filter((o) => o.status === "open" || o.status === "partially_filled" || o.status === "stale")
+      .sort((a, b) => a.seq - b.seq)
+      .map(view);
+    return {
+      nextOrderSeq: this.nextSeq,
+      nextMatchSeq: this.nextMatchSeq,
+      markets: [...this.markets.values()].map((m) => ({ ...m })).sort(byKey),
+      books: books.sort(byKey),
+      orders,
+    };
   }
 
   getOrder(orderId: string): OrderView | undefined {
