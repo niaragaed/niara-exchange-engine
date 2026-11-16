@@ -1,0 +1,29 @@
+{
+  "note": "TESTNET ONLY. Market parameters for solana-devnet, read by scripts/sync-solana-listings.ts. Public addresses only, no secrets. The sync writes nothing until 'reviewed' is true.",
+  "cluster": "devnet",
+  "programId": "B311xH3PcEx86gdRbuinrGrh1r9G2qzjDCji8uc6eD9v",
+  "quoteAsset": "8iWQ7VxYrkUv471vEoZ664eLwDzWinPiCJpRvcTUA24y",
+  "reviewed": false,
+  "lotSizes": {
+    "8LjQkS1rTJGpzz9wbyAmqJk7oZgDsZS6vhPBv2BhzsTo": {
+      "symbol": "tEQTY",
+      "lotSize": "1",
+      "why": "Niara Demo Equity (TEST), 0 decimals: one share per lot; prices are mockUSDT base units per share."
+    },
+    "4EBRQ9NRwpriv1YP6Y8a5WnByMxj2WjGveEnHZUk7Jnf": {
+      "symbol": "tDEB",
+      "lotSize": "1",
+      "why": "FixedIncome (P2P escrow class): mirrored for the public listing view; the order book refuses it."
+    },
+    "8iWQ7VxYrkUv471vEoZ664eLwDzWinPiCJpRvcTUA24y": {
+      "symbol": "mockUSDT",
+      "lotSize": "1",
+      "why": "Currency, the quote asset: mirrored for the public listing view; never an order book asset."
+    },
+    "5EVnygYXvWZtuRPpafUnEBZBgG2SUczupvt5RtCxafjk": {
+      "symbol": "mockBRL",
+      "lotSize": "1",
+      "why": "Currency (P2P escrow class): mirrored for the public listing view; never an order book asset."
+    }
+  }
+}

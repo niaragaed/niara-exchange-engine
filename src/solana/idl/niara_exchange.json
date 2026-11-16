@@ -1,0 +1,5771 @@
+{
+  "address": "B311xH3PcEx86gdRbuinrGrh1r9G2qzjDCji8uc6eD9v",
+  "metadata": {
+    "name": "niara_exchange",
+    "version": "0.1.0",
+    "spec": "0.1.0",
+    "description": "Niara Exchange: curated listing and atomic settlement for tokenized securities (testnet only)"
+  },
+  "instructions": [
+    {
+      "name": "accept_admin",
+      "docs": [
+        "Second step of an admin transfer: the admin proposed by",
+        "`propose_change(Admin)` signs once the timelock has elapsed."
+      ],
+      "discriminator": [
+        112,
+        42,
+        45,
+        90,
+        116,
+        181,
+        13,
+        170
+      ],
+      "accounts": [
+        {
+          "name": "new_admin",
+          "docs": [
+            "The proposed admin. It only signs: it pays nothing and is not written,",
+            "so a multisig vault (e.g. a Squads v4 vault PDA, through a vault",
+            "transaction) can accept."
+          ],
+          "signer": true
+        },
+        {
+          "name": "admin",
+          "docs": [
+            "paid the pending change's rent at `propose_change` and gets it back."
+          ],
+          "writable": true,
+          "relations": [
+            "config"
+          ]
+        },
+        {
+          "name": "config",
+          "writable": true,
+          "pda": {
+            "seeds": [
+              {
+                "kind": "const",
+                "value": [
+                  99,
+                  111,
+                  110,
+                  102,
+                  105,
+                  103
+                ]
+              }
+            ]
+          }
+        },
+        {
+          "name": "pending_change",
+          "writable": true
+        },
+        {
+          "name": "event_authority"
+        },
+        {
+          "name": "program"
+        }
+      ],
+      "args": []
+    },
+    {
+      "name": "accept_deal",
+      "docs": [
+        "Counterparty delivers its side; both legs, fee and cashback in one go."
+      ],
+      "discriminator": [
+        76,
+        156,
+        34,
+        30,
+        129,
+        136,
+        76,
+        244
+      ],
+      "accounts": [
+        {
+          "name": "counterparty",
+          "signer": true,
+          "relations": [
+            "deal"
+          ]
+        },
+        {
+          "name": "config",
+          "pda": {
+            "seeds": [
+              {
+                "kind": "const",
+                "value": [
+                  99,
+                  111,
+                  110,
+                  102,
+                  105,
+                  103
+                ]
+              }
+            ]
+          }
+        },
+        {
+          "name": "asset_mint",
+          "relations": [
+            "deal"
+          ]
+        },
+        {
+          "name": "payment_mint",
+          "relations": [
+            "deal"
+          ]
+        },
+        {
+          "name": "asset_listing",
+          "pda": {
+            "seeds": [
+              {
+                "kind": "const",
+                "value": [
+                  108,
+                  105,
+                  115,
+                  116,
+                  105,
+                  110,
+                  103
+                ]
+              },
+              {
+                "kind": "account",
+                "path": "asset_mint"
+              }
+            ]
+          }
+        },
+        {
+          "name": "payment_listing",
+          "pda": {
+            "seeds": [
+              {
+                "kind": "const",
+                "value": [
+                  108,
+                  105,
+                  115,
+                  116,
+                  105,
+                  110,
+                  103
+                ]
+              },
+              {
+                "kind": "account",
+                "path": "payment_mint"
+              }
+            ]
+          }
+        },
+        {
+          "name": "proposer",
+          "docs": [
+            "rent when it closes."
+          ],
+          "writable": true,
+          "relations": [
+            "deal"
+          ]
+        },
+        {
+          "name": "deal",
+          "writable": true,
+          "pda": {
+            "seeds": [
+              {
+                "kind": "const",
+                "value": [
+                  100,
+                  101,
+                  97,
+                  108
+                ]
+              },
+              {
+                "kind": "account",
+                "path": "deal.proposer",
+                "account": "Deal"
+              },
+              {
+                "kind": "account",
+                "path": "deal.deal_id",
+                "account": "Deal"
+              }
+            ]
+          }
+        },
+        {
+          "name": "deal_vault",
+          "writable": true,
+          "pda": {
+            "seeds": [
+              {
+                "kind": "const",
+                "value": [
+                  100,
+                  101,
+                  97,
+                  108,
+                  95,
+                  118,
+                  97,
+                  117,
+                  108,
+                  116
+                ]
+              },
+              {
+                "kind": "account",
+                "path": "deal"
+              }
+            ]
+          }
+        },
+        {
+          "name": "counterparty_asset_account",
+          "writable": true
+        },
+        {
+          "name": "counterparty_payment_account",
+          "writable": true
+        },
+        {
+          "name": "proposer_proceeds_account",
+          "docs": [
+            "The proposer's account of the mint it receives: the payment when it",
+            "sold, the asset when it bought (mint and token program checked by the",
+            "handler)."
+          ],
+          "writable": true
+        },
+        {
+          "name": "fee_ledger",
+          "docs": [
+            "Ledger and vault of the fee mint (USDT). The handler requires one leg",
+            "of the deal to be that mint; the vault was created with it."
+          ],
+          "writable": true,
+          "pda": {
+            "seeds": [
+              {
+                "kind": "const",
+                "value": [
+                  102,
+                  101,
+                  101,
+                  115
+                ]
+              },
+              {
+                "kind": "account",
+                "path": "config.fee_mint",
+                "account": "Config"
+              }
+            ]
+          }
+        },
+        {
+          "name": "fee_vault",
+          "writable": true,
+          "pda": {
+            "seeds": [
+              {
+                "kind": "const",
+                "value": [
+                  102,
+                  101,
+                  101,
+                  95,
+                  118,
+                  97,
+                  117,
+                  108,
+                  116
+                ]
+              },
+              {
+                "kind": "account",
+                "path": "config.fee_mint",
+                "account": "Config"
+              }
+            ]
+          }
+        },
+        {
+          "name": "cashback_ledger",
+          "docs": [
+            "Required when the asset listing is cashback-eligible; `None` for",
+            "`Currency` assets, which never accrue cashback. Cashback is in the fee",
+            "mint, which is then the payment mint."
+          ],
+          "writable": true,
+          "optional": true,
+          "pda": {
+            "seeds": [
+              {
+                "kind": "const",
+                "value": [
+                  99,
+                  97,
+                  115,
+                  104,
+                  98,
+                  97,
+                  99,
+                  107
+                ]
+              },
+              {
+                "kind": "account",
+                "path": "asset_listing"
+              },
+              {
+                "kind": "account",
+                "path": "config.fee_mint",
+                "account": "Config"
+              }
+            ]
+          }
+        },
+        {
+          "name": "asset_token_program"
+        },
+        {
+          "name": "payment_token_program"
+        },
+        {
+          "name": "event_authority"
+        },
+        {
+          "name": "program"
+        }
+      ],
+      "args": []
+    },
+    {
+      "name": "approve_issuance",
+      "docs": [
+        "Listing authority executes a batch: the program mints via its PDA."
+      ],
+      "discriminator": [
+        132,
+        177,
+        54,
+        241,
+        115,
+        175,
+        154,
+        88
+      ],
+      "accounts": [
+        {
+          "name": "listing_authority",
+          "signer": true,
+          "relations": [
+            "config"
+          ]
+        },
+        {
+          "name": "config",
+          "pda": {
+            "seeds": [
+              {
+                "kind": "const",
+                "value": [
+                  99,
+                  111,
+                  110,
+                  102,
+                  105,
+                  103
+                ]
+              }
+            ]
+          }
+        },
+        {
+          "name": "listing",
+          "writable": true,
+          "pda": {
+            "seeds": [
+              {
+                "kind": "const",
+                "value": [
+                  108,
+                  105,
+                  115,
+                  116,
+                  105,
+                  110,
+                  103
+                ]
+              },
+              {
+                "kind": "account",
+                "path": "asset_mint"
+              }
+            ]
+          },
+          "relations": [
+            "batch"
+          ]
+        },
+        {
+          "name": "batch",
+          "writable": true,
+          "pda": {
+            "seeds": [
+              {
+                "kind": "const",
+                "value": [
+                  98,
+                  97,
+                  116,
+                  99,
+                  104
+                ]
+              },
+              {
+                "kind": "account",
+                "path": "listing"
+              },
+              {
+                "kind": "account",
+                "path": "batch.batch_no",
+                "account": "IssuanceBatch"
+              }
+            ]
+          }
+        },
+        {
+          "name": "asset_mint",
+          "writable": true
+        },
+        {
+          "name": "mint_authority",
+          "pda": {
+            "seeds": [
+              {
+                "kind": "const",
+                "value": [
+                  109,
+                  105,
+                  110,
+                  116,
+                  95,
+                  97,
+                  117,
+                  116,
+                  104,
+                  111,
+                  114,
+                  105,
+                  116,
+                  121
+                ]
+              },
+              {
+                "kind": "account",
+                "path": "asset_mint"
+              }
+            ]
+          }
+        },
+        {
+          "name": "destination",
+          "docs": [
+            "Any account of the asset mint owned by the batch's recipient."
+          ],
+          "writable": true
+        },
+        {
+          "name": "token_program"
+        },
+        {
+          "name": "event_authority"
+        },
+        {
+          "name": "program"
+        }
+      ],
+      "args": []
+    },
+    {
+      "name": "approve_listing",
+      "docs": [
+        "Reinstates a `Suspended` listing; refuses `Pending` and `Quoted`."
+      ],
+      "discriminator": [
+        13,
+        226,
+        56,
+        224,
+        181,
+        162,
+        162,
+        8
+      ],
+      "accounts": [
+        {
+          "name": "listing_authority",
+          "signer": true,
+          "relations": [
+            "config"
+          ]
+        },
+        {
+          "name": "config",
+          "pda": {
+            "seeds": [
+              {
+                "kind": "const",
+                "value": [
+                  99,
+                  111,
+                  110,
+                  102,
+                  105,
+                  103
+                ]
+              }
+            ]
+          }
+        },
+        {
+          "name": "listing",
+          "writable": true,
+          "pda": {
+            "seeds": [
+              {
+                "kind": "const",
+                "value": [
+                  108,
+                  105,
+                  115,
+                  116,
+                  105,
+                  110,
+                  103
+                ]
+              },
+              {
+                "kind": "account",
+                "path": "listing.asset_mint",
+                "account": "Listing"
+              }
+            ]
+          }
+        },
+        {
+          "name": "event_authority"
+        },
+        {
+          "name": "program"
+        }
+      ],
+      "args": []
+    },
+    {
+      "name": "burn_with_reason",
+      "docs": [
+        "Holder burns its own tokens, with a reason and a document reference."
+      ],
+      "discriminator": [
+        178,
+        249,
+        108,
+        55,
+        224,
+        93,
+        31,
+        154
+      ],
+      "accounts": [
+        {
+          "name": "holder",
+          "signer": true
+        },
+        {
+          "name": "listing",
+          "writable": true,
+          "pda": {
+            "seeds": [
+              {
+                "kind": "const",
+                "value": [
+                  108,
+                  105,
+                  115,
+                  116,
+                  105,
+                  110,
+                  103
+                ]
+              },
+              {
+                "kind": "account",
+                "path": "asset_mint"
+              }
+            ]
+          }
+        },
+        {
+          "name": "asset_mint",
+          "writable": true
+        },
+        {
+          "name": "holder_account",
+          "writable": true
+        },
+        {
+          "name": "token_program"
+        },
+        {
+          "name": "event_authority"
+        },
+        {
+          "name": "program"
+        }
+      ],
+      "args": [
+        {
+          "name": "amount",
+          "type": "u64"
+        },
+        {
+          "name": "reason",
+          "type": {
+            "defined": {
+              "name": "BurnReason"
+            }
+          }
+        },
+        {
+          "name": "reference",
+          "type": {
+            "array": [
+              "u8",
+              32
+            ]
+          }
+        }
+      ]
+    },
+    {
+      "name": "cancel_change",
+      "discriminator": [
+        100,
+        30,
+        4,
+        148,
+        3,
+        244,
+        243,
+        168
+      ],
+      "accounts": [
+        {
+          "name": "admin",
+          "writable": true,
+          "signer": true,
+          "relations": [
+            "config"
+          ]
+        },
+        {
+          "name": "config",
+          "writable": true,
+          "pda": {
+            "seeds": [
+              {
+                "kind": "const",
+                "value": [
+                  99,
+                  111,
+                  110,
+                  102,
+                  105,
+                  103
+                ]
+              }
+            ]
+          }
+        },
+        {
+          "name": "pending_change",
+          "writable": true
+        },
+        {
+          "name": "event_authority"
+        },
+        {
+          "name": "program"
+        }
+      ],
+      "args": []
+    },
+    {
+      "name": "cancel_deal",
+      "docs": [
+        "Proposer takes its deposit back while the deal is open. Never paused."
+      ],
+      "discriminator": [
+        158,
+        86,
+        193,
+        45,
+        168,
+        111,
+        48,
+        29
+      ],
+      "accounts": [
+        {
+          "name": "proposer",
+          "docs": [
+            "Receives the vault's rent."
+          ],
+          "writable": true,
+          "signer": true,
+          "relations": [
+            "deal"
+          ]
+        },
+        {
+          "name": "deal",
+          "writable": true,
+          "pda": {
+            "seeds": [
+              {
+                "kind": "const",
+                "value": [
+                  100,
+                  101,
+                  97,
+                  108
+                ]
+              },
+              {
+                "kind": "account",
+                "path": "deal.proposer",
+                "account": "Deal"
+              },
+              {
+                "kind": "account",
+                "path": "deal.deal_id",
+                "account": "Deal"
+              }
+            ]
+          }
+        },
+        {
+          "name": "deposit_mint"
+        },
+        {
+          "name": "deal_vault",
+          "writable": true,
+          "pda": {
+            "seeds": [
+              {
+                "kind": "const",
+                "value": [
+                  100,
+                  101,
+                  97,
+                  108,
+                  95,
+                  118,
+                  97,
+                  117,
+                  108,
+                  116
+                ]
+              },
+              {
+                "kind": "account",
+                "path": "deal"
+              }
+            ]
+          }
+        },
+        {
+          "name": "proposer_refund_account",
+          "writable": true
+        },
+        {
+          "name": "token_program"
+        },
+        {
+          "name": "event_authority"
+        },
+        {
+          "name": "program"
+        }
+      ],
+      "args": []
+    },
+    {
+      "name": "delist",
+      "discriminator": [
+        55,
+        136,
+        205,
+        107,
+        107,
+        173,
+        4,
+        31
+      ],
+      "accounts": [
+        {
+          "name": "listing_authority",
+          "signer": true,
+          "relations": [
+            "config"
+          ]
+        },
+        {
+          "name": "config",
+          "pda": {
+            "seeds": [
+              {
+                "kind": "const",
+                "value": [
+                  99,
+                  111,
+                  110,
+                  102,
+                  105,
+                  103
+                ]
+              }
+            ]
+          }
+        },
+        {
+          "name": "listing",
+          "writable": true,
+          "pda": {
+            "seeds": [
+              {
+                "kind": "const",
+                "value": [
+                  108,
+                  105,
+                  115,
+                  116,
+                  105,
+                  110,
+                  103
+                ]
+              },
+              {
+                "kind": "account",
+                "path": "listing.asset_mint",
+                "account": "Listing"
+              }
+            ]
+          }
+        },
+        {
+          "name": "event_authority"
+        },
+        {
+          "name": "program"
+        }
+      ],
+      "args": []
+    },
+    {
+      "name": "execute_change",
+      "discriminator": [
+        104,
+        53,
+        136,
+        238,
+        82,
+        222,
+        200,
+        42
+      ],
+      "accounts": [
+        {
+          "name": "admin",
+          "writable": true,
+          "signer": true,
+          "relations": [
+            "config"
+          ]
+        },
+        {
+          "name": "config",
+          "writable": true,
+          "pda": {
+            "seeds": [
+              {
+                "kind": "const",
+                "value": [
+                  99,
+                  111,
+                  110,
+                  102,
+                  105,
+                  103
+                ]
+              }
+            ]
+          }
+        },
+        {
+          "name": "pending_change",
+          "writable": true
+        },
+        {
+          "name": "event_authority"
+        },
+        {
+          "name": "program"
+        }
+      ],
+      "args": []
+    },
+    {
+      "name": "expire_deal",
+      "docs": [
+        "Anyone refunds the proposer once the deal has expired. Never paused."
+      ],
+      "discriminator": [
+        124,
+        60,
+        91,
+        19,
+        185,
+        29,
+        64,
+        208
+      ],
+      "accounts": [
+        {
+          "name": "proposer",
+          "docs": [
+            "rent; does not sign."
+          ],
+          "writable": true,
+          "relations": [
+            "deal"
+          ]
+        },
+        {
+          "name": "deal",
+          "writable": true,
+          "pda": {
+            "seeds": [
+              {
+                "kind": "const",
+                "value": [
+                  100,
+                  101,
+                  97,
+                  108
+                ]
+              },
+              {
+                "kind": "account",
+                "path": "deal.proposer",
+                "account": "Deal"
+              },
+              {
+                "kind": "account",
+                "path": "deal.deal_id",
+                "account": "Deal"
+              }
+            ]
+          }
+        },
+        {
+          "name": "deposit_mint"
+        },
+        {
+          "name": "deal_vault",
+          "writable": true,
+          "pda": {
+            "seeds": [
+              {
+                "kind": "const",
+                "value": [
+                  100,
+                  101,
+                  97,
+                  108,
+                  95,
+                  118,
+                  97,
+                  117,
+                  108,
+                  116
+                ]
+              },
+              {
+                "kind": "account",
+                "path": "deal"
+              }
+            ]
+          }
+        },
+        {
+          "name": "proposer_refund_account",
+          "writable": true
+        },
+        {
+          "name": "token_program"
+        },
+        {
+          "name": "event_authority"
+        },
+        {
+          "name": "program"
+        }
+      ],
+      "args": []
+    },
+    {
+      "name": "freeze_cashback",
+      "docs": [
+        "Stops `withdraw_cashback` for one listing (accrual continues). No",
+        "timelock; allowed while paused and in any listing status."
+      ],
+      "discriminator": [
+        82,
+        51,
+        89,
+        248,
+        58,
+        142,
+        173,
+        255
+      ],
+      "accounts": [
+        {
+          "name": "listing_authority",
+          "signer": true,
+          "relations": [
+            "config"
+          ]
+        },
+        {
+          "name": "config",
+          "pda": {
+            "seeds": [
+              {
+                "kind": "const",
+                "value": [
+                  99,
+                  111,
+                  110,
+                  102,
+                  105,
+                  103
+                ]
+              }
+            ]
+          }
+        },
+        {
+          "name": "listing",
+          "writable": true,
+          "pda": {
+            "seeds": [
+              {
+                "kind": "const",
+                "value": [
+                  108,
+                  105,
+                  115,
+                  116,
+                  105,
+                  110,
+                  103
+                ]
+              },
+              {
+                "kind": "account",
+                "path": "listing.asset_mint",
+                "account": "Listing"
+              }
+            ]
+          }
+        },
+        {
+          "name": "event_authority"
+        },
+        {
+          "name": "program"
+        }
+      ],
+      "args": []
+    },
+    {
+      "name": "init_cashback_ledger",
+      "discriminator": [
+        188,
+        168,
+        252,
+        89,
+        151,
+        20,
+        1,
+        187
+      ],
+      "accounts": [
+        {
+          "name": "payer",
+          "writable": true,
+          "signer": true
+        },
+        {
+          "name": "config",
+          "pda": {
+            "seeds": [
+              {
+                "kind": "const",
+                "value": [
+                  99,
+                  111,
+                  110,
+                  102,
+                  105,
+                  103
+                ]
+              }
+            ]
+          }
+        },
+        {
+          "name": "listing",
+          "pda": {
+            "seeds": [
+              {
+                "kind": "const",
+                "value": [
+                  108,
+                  105,
+                  115,
+                  116,
+                  105,
+                  110,
+                  103
+                ]
+              },
+              {
+                "kind": "account",
+                "path": "listing.asset_mint",
+                "account": "Listing"
+              }
+            ]
+          }
+        },
+        {
+          "name": "cashback_ledger",
+          "writable": true,
+          "pda": {
+            "seeds": [
+              {
+                "kind": "const",
+                "value": [
+                  99,
+                  97,
+                  115,
+                  104,
+                  98,
+                  97,
+                  99,
+                  107
+                ]
+              },
+              {
+                "kind": "account",
+                "path": "listing"
+              },
+              {
+                "kind": "account",
+                "path": "config.fee_mint",
+                "account": "Config"
+              }
+            ]
+          }
+        },
+        {
+          "name": "system_program",
+          "address": "11111111111111111111111111111111"
+        }
+      ],
+      "args": []
+    },
+    {
+      "name": "init_fee_vault",
+      "docs": [
+        "Creates the fee vault and fee ledger of `Config.fee_mint` (USDT)."
+      ],
+      "discriminator": [
+        141,
+        17,
+        88,
+        209,
+        137,
+        84,
+        89,
+        235
+      ],
+      "accounts": [
+        {
+          "name": "payer",
+          "writable": true,
+          "signer": true
+        },
+        {
+          "name": "config",
+          "pda": {
+            "seeds": [
+              {
+                "kind": "const",
+                "value": [
+                  99,
+                  111,
+                  110,
+                  102,
+                  105,
+                  103
+                ]
+              }
+            ]
+          }
+        },
+        {
+          "name": "fee_mint"
+        },
+        {
+          "name": "vault_authority",
+          "pda": {
+            "seeds": [
+              {
+                "kind": "const",
+                "value": [
+                  118,
+                  97,
+                  117,
+                  108,
+                  116
+                ]
+              }
+            ]
+          }
+        },
+        {
+          "name": "fee_vault",
+          "docs": [
+            "allowlist check (an Anchor `init` would run first and fail on some",
+            "rejected mints with an unrelated error). A PDA rather than an ATA:",
+            "anyone can create an ATA, so creating one could be front-run to block",
+            "this instruction."
+          ],
+          "writable": true,
+          "pda": {
+            "seeds": [
+              {
+                "kind": "const",
+                "value": [
+                  102,
+                  101,
+                  101,
+                  95,
+                  118,
+                  97,
+                  117,
+                  108,
+                  116
+                ]
+              },
+              {
+                "kind": "account",
+                "path": "fee_mint"
+              }
+            ]
+          }
+        },
+        {
+          "name": "fee_ledger",
+          "writable": true,
+          "pda": {
+            "seeds": [
+              {
+                "kind": "const",
+                "value": [
+                  102,
+                  101,
+                  101,
+                  115
+                ]
+              },
+              {
+                "kind": "account",
+                "path": "fee_mint"
+              }
+            ]
+          }
+        },
+        {
+          "name": "token_program"
+        },
+        {
+          "name": "system_program",
+          "address": "11111111111111111111111111111111"
+        },
+        {
+          "name": "event_authority"
+        },
+        {
+          "name": "program"
+        }
+      ],
+      "args": []
+    },
+    {
+      "name": "initialize_config",
+      "discriminator": [
+        208,
+        127,
+        21,
+        1,
+        194,
+        190,
+        196,
+        70
+      ],
+      "accounts": [
+        {
+          "name": "admin",
+          "writable": true,
+          "signer": true
+        },
+        {
+          "name": "config",
+          "writable": true,
+          "pda": {
+            "seeds": [
+              {
+                "kind": "const",
+                "value": [
+                  99,
+                  111,
+                  110,
+                  102,
+                  105,
+                  103
+                ]
+              }
+            ]
+          }
+        },
+        {
+          "name": "program",
+          "address": "B311xH3PcEx86gdRbuinrGrh1r9G2qzjDCji8uc6eD9v"
+        },
+        {
+          "name": "program_data"
+        },
+        {
+          "name": "system_program",
+          "address": "11111111111111111111111111111111"
+        }
+      ],
+      "args": [
+        {
+          "name": "params",
+          "type": {
+            "defined": {
+              "name": "InitializeConfigParams"
+            }
+          }
+        }
+      ]
+    },
+    {
+      "name": "list_currency",
+      "discriminator": [
+        17,
+        15,
+        33,
+        197,
+        8,
+        211,
+        229,
+        67
+      ],
+      "accounts": [
+        {
+          "name": "listing_authority",
+          "writable": true,
+          "signer": true,
+          "relations": [
+            "config"
+          ]
+        },
+        {
+          "name": "config",
+          "pda": {
+            "seeds": [
+              {
+                "kind": "const",
+                "value": [
+                  99,
+                  111,
+                  110,
+                  102,
+                  105,
+                  103
+                ]
+              }
+            ]
+          }
+        },
+        {
+          "name": "asset_mint"
+        },
+        {
+          "name": "listing",
+          "writable": true,
+          "pda": {
+            "seeds": [
+              {
+                "kind": "const",
+                "value": [
+                  108,
+                  105,
+                  115,
+                  116,
+                  105,
+                  110,
+                  103
+                ]
+              },
+              {
+                "kind": "account",
+                "path": "asset_mint"
+              }
+            ]
+          }
+        },
+        {
+          "name": "token_program"
+        },
+        {
+          "name": "system_program",
+          "address": "11111111111111111111111111111111"
+        },
+        {
+          "name": "event_authority"
+        },
+        {
+          "name": "program"
+        }
+      ],
+      "args": []
+    },
+    {
+      "name": "open_deal",
+      "docs": [
+        "Proposer escrows its side of a bilateral deal with a named counterparty."
+      ],
+      "discriminator": [
+        9,
+        105,
+        52,
+        78,
+        105,
+        158,
+        187,
+        9
+      ],
+      "accounts": [
+        {
+          "name": "proposer",
+          "docs": [
+            "Pays the rent of the deal (never closed) and of its vault (refunded to",
+            "the proposer when the vault closes)."
+          ],
+          "writable": true,
+          "signer": true
+        },
+        {
+          "name": "config",
+          "pda": {
+            "seeds": [
+              {
+                "kind": "const",
+                "value": [
+                  99,
+                  111,
+                  110,
+                  102,
+                  105,
+                  103
+                ]
+              }
+            ]
+          }
+        },
+        {
+          "name": "asset_mint"
+        },
+        {
+          "name": "payment_mint"
+        },
+        {
+          "name": "asset_listing",
+          "pda": {
+            "seeds": [
+              {
+                "kind": "const",
+                "value": [
+                  108,
+                  105,
+                  115,
+                  116,
+                  105,
+                  110,
+                  103
+                ]
+              },
+              {
+                "kind": "account",
+                "path": "asset_mint"
+              }
+            ]
+          }
+        },
+        {
+          "name": "payment_listing",
+          "pda": {
+            "seeds": [
+              {
+                "kind": "const",
+                "value": [
+                  108,
+                  105,
+                  115,
+                  116,
+                  105,
+                  110,
+                  103
+                ]
+              },
+              {
+                "kind": "account",
+                "path": "payment_mint"
+              }
+            ]
+          }
+        },
+        {
+          "name": "deal",
+          "writable": true,
+          "pda": {
+            "seeds": [
+              {
+                "kind": "const",
+                "value": [
+                  100,
+                  101,
+                  97,
+                  108
+                ]
+              },
+              {
+                "kind": "account",
+                "path": "proposer"
+              },
+              {
+                "kind": "arg",
+                "path": "deal_id"
+              }
+            ]
+          }
+        },
+        {
+          "name": "deal_vault",
+          "docs": [
+            "deposited mint (which depends on `proposer_side`) owned by `deal`."
+          ],
+          "writable": true,
+          "pda": {
+            "seeds": [
+              {
+                "kind": "const",
+                "value": [
+                  100,
+                  101,
+                  97,
+                  108,
+                  95,
+                  118,
+                  97,
+                  117,
+                  108,
+                  116
+                ]
+              },
+              {
+                "kind": "account",
+                "path": "deal"
+              }
+            ]
+          }
+        },
+        {
+          "name": "proposer_deposit_account",
+          "docs": [
+            "The proposer's account of the mint it escrows: the asset when selling,",
+            "the payment when buying (mint and token program checked by the handler)."
+          ],
+          "writable": true
+        },
+        {
+          "name": "asset_token_program"
+        },
+        {
+          "name": "payment_token_program"
+        },
+        {
+          "name": "system_program",
+          "address": "11111111111111111111111111111111"
+        },
+        {
+          "name": "event_authority"
+        },
+        {
+          "name": "program"
+        }
+      ],
+      "args": [
+        {
+          "name": "deal_id",
+          "type": {
+            "array": [
+              "u8",
+              16
+            ]
+          }
+        },
+        {
+          "name": "terms",
+          "type": {
+            "defined": {
+              "name": "DealTerms"
+            }
+          }
+        },
+        {
+          "name": "expires_at",
+          "type": "i64"
+        }
+      ]
+    },
+    {
+      "name": "pause",
+      "discriminator": [
+        211,
+        22,
+        221,
+        251,
+        74,
+        121,
+        193,
+        47
+      ],
+      "accounts": [
+        {
+          "name": "admin",
+          "signer": true,
+          "relations": [
+            "config"
+          ]
+        },
+        {
+          "name": "config",
+          "writable": true,
+          "pda": {
+            "seeds": [
+              {
+                "kind": "const",
+                "value": [
+                  99,
+                  111,
+                  110,
+                  102,
+                  105,
+                  103
+                ]
+              }
+            ]
+          }
+        },
+        {
+          "name": "event_authority"
+        },
+        {
+          "name": "program"
+        }
+      ],
+      "args": []
+    },
+    {
+      "name": "pay_listing_fee",
+      "docs": [
+        "Issuer pays the quoted listing fee; the listing becomes `Approved`."
+      ],
+      "discriminator": [
+        38,
+        175,
+        250,
+        127,
+        192,
+        168,
+        243,
+        7
+      ],
+      "accounts": [
+        {
+          "name": "issuer",
+          "docs": [
+            "Signs the transfer out of its own account of the fee mint."
+          ],
+          "signer": true,
+          "relations": [
+            "listing"
+          ]
+        },
+        {
+          "name": "config",
+          "pda": {
+            "seeds": [
+              {
+                "kind": "const",
+                "value": [
+                  99,
+                  111,
+                  110,
+                  102,
+                  105,
+                  103
+                ]
+              }
+            ]
+          }
+        },
+        {
+          "name": "listing",
+          "docs": [
+            "`Currency` listings have `issuer == Pubkey::default()`, which cannot sign."
+          ],
+          "writable": true,
+          "pda": {
+            "seeds": [
+              {
+                "kind": "const",
+                "value": [
+                  108,
+                  105,
+                  115,
+                  116,
+                  105,
+                  110,
+                  103
+                ]
+              },
+              {
+                "kind": "account",
+                "path": "listing.asset_mint",
+                "account": "Listing"
+              }
+            ]
+          }
+        },
+        {
+          "name": "fee_mint",
+          "docs": [
+            "The fee mint in force. The handler also requires it to be the mint",
+            "the quote was made in, after the status check (an unquoted listing",
+            "has no quote mint, and must fail with `ListingNotQuoted`)."
+          ]
+        },
+        {
+          "name": "fee_ledger",
+          "writable": true,
+          "pda": {
+            "seeds": [
+              {
+                "kind": "const",
+                "value": [
+                  102,
+                  101,
+                  101,
+                  115
+                ]
+              },
+              {
+                "kind": "account",
+                "path": "fee_mint"
+              }
+            ]
+          }
+        },
+        {
+          "name": "fee_vault",
+          "docs": [
+            "The fee vault is a PDA that only `init_fee_vault` creates, so the",
+            "seeds and the mint identify it; no vault-authority account is needed",
+            "to pay into it."
+          ],
+          "writable": true,
+          "pda": {
+            "seeds": [
+              {
+                "kind": "const",
+                "value": [
+                  102,
+                  101,
+                  101,
+                  95,
+                  118,
+                  97,
+                  117,
+                  108,
+                  116
+                ]
+              },
+              {
+                "kind": "account",
+                "path": "fee_mint"
+              }
+            ]
+          }
+        },
+        {
+          "name": "source",
+          "docs": [
+            "Any account of the fee mint owned by the issuer."
+          ],
+          "writable": true
+        },
+        {
+          "name": "token_program"
+        },
+        {
+          "name": "event_authority"
+        },
+        {
+          "name": "program"
+        }
+      ],
+      "args": []
+    },
+    {
+      "name": "propose_change",
+      "discriminator": [
+        167,
+        211,
+        18,
+        222,
+        93,
+        215,
+        74,
+        159
+      ],
+      "accounts": [
+        {
+          "name": "admin",
+          "writable": true,
+          "signer": true,
+          "relations": [
+            "config"
+          ]
+        },
+        {
+          "name": "config",
+          "pda": {
+            "seeds": [
+              {
+                "kind": "const",
+                "value": [
+                  99,
+                  111,
+                  110,
+                  102,
+                  105,
+                  103
+                ]
+              }
+            ]
+          }
+        },
+        {
+          "name": "pending_change",
+          "writable": true
+        },
+        {
+          "name": "system_program",
+          "address": "11111111111111111111111111111111"
+        },
+        {
+          "name": "event_authority"
+        },
+        {
+          "name": "program"
+        }
+      ],
+      "args": [
+        {
+          "name": "change",
+          "type": {
+            "defined": {
+              "name": "ConfigChange"
+            }
+          }
+        }
+      ]
+    },
+    {
+      "name": "quote_listing",
+      "docs": [
+        "Listing authority quotes the listing fee of a `Pending` or `Quoted`",
+        "issuer listing (spec §3.13). `valuation` is in fee-mint base units."
+      ],
+      "discriminator": [
+        212,
+        128,
+        120,
+        148,
+        225,
+        48,
+        250,
+        136
+      ],
+      "accounts": [
+        {
+          "name": "listing_authority",
+          "signer": true,
+          "relations": [
+            "config"
+          ]
+        },
+        {
+          "name": "config",
+          "pda": {
+            "seeds": [
+              {
+                "kind": "const",
+                "value": [
+                  99,
+                  111,
+                  110,
+                  102,
+                  105,
+                  103
+                ]
+              }
+            ]
+          }
+        },
+        {
+          "name": "listing",
+          "writable": true,
+          "pda": {
+            "seeds": [
+              {
+                "kind": "const",
+                "value": [
+                  108,
+                  105,
+                  115,
+                  116,
+                  105,
+                  110,
+                  103
+                ]
+              },
+              {
+                "kind": "account",
+                "path": "listing.asset_mint",
+                "account": "Listing"
+              }
+            ]
+          }
+        },
+        {
+          "name": "event_authority"
+        },
+        {
+          "name": "program"
+        }
+      ],
+      "args": [
+        {
+          "name": "valuation",
+          "type": "u64"
+        },
+        {
+          "name": "listing_fee_bps",
+          "type": "u16"
+        },
+        {
+          "name": "expires_at",
+          "type": "i64"
+        }
+      ]
+    },
+    {
+      "name": "reject_issuance",
+      "discriminator": [
+        69,
+        56,
+        88,
+        46,
+        227,
+        14,
+        1,
+        156
+      ],
+      "accounts": [
+        {
+          "name": "listing_authority",
+          "signer": true,
+          "relations": [
+            "config"
+          ]
+        },
+        {
+          "name": "config",
+          "pda": {
+            "seeds": [
+              {
+                "kind": "const",
+                "value": [
+                  99,
+                  111,
+                  110,
+                  102,
+                  105,
+                  103
+                ]
+              }
+            ]
+          }
+        },
+        {
+          "name": "listing",
+          "pda": {
+            "seeds": [
+              {
+                "kind": "const",
+                "value": [
+                  108,
+                  105,
+                  115,
+                  116,
+                  105,
+                  110,
+                  103
+                ]
+              },
+              {
+                "kind": "account",
+                "path": "listing.asset_mint",
+                "account": "Listing"
+              }
+            ]
+          },
+          "relations": [
+            "batch"
+          ]
+        },
+        {
+          "name": "batch",
+          "writable": true,
+          "pda": {
+            "seeds": [
+              {
+                "kind": "const",
+                "value": [
+                  98,
+                  97,
+                  116,
+                  99,
+                  104
+                ]
+              },
+              {
+                "kind": "account",
+                "path": "listing"
+              },
+              {
+                "kind": "account",
+                "path": "batch.batch_no",
+                "account": "IssuanceBatch"
+              }
+            ]
+          }
+        },
+        {
+          "name": "event_authority"
+        },
+        {
+          "name": "program"
+        }
+      ],
+      "args": []
+    },
+    {
+      "name": "request_issuance",
+      "docs": [
+        "Issuer proposes a numbered batch; mints nothing."
+      ],
+      "discriminator": [
+        179,
+        229,
+        133,
+        209,
+        86,
+        12,
+        2,
+        192
+      ],
+      "accounts": [
+        {
+          "name": "issuer",
+          "docs": [
+            "Pays the rent of the batch record."
+          ],
+          "writable": true,
+          "signer": true,
+          "relations": [
+            "listing"
+          ]
+        },
+        {
+          "name": "listing",
+          "docs": [
+            "`Currency` listings have `issuer == Pubkey::default()`, which cannot sign."
+          ],
+          "writable": true,
+          "pda": {
+            "seeds": [
+              {
+                "kind": "const",
+                "value": [
+                  108,
+                  105,
+                  115,
+                  116,
+                  105,
+                  110,
+                  103
+                ]
+              },
+              {
+                "kind": "account",
+                "path": "listing.asset_mint",
+                "account": "Listing"
+              }
+            ]
+          }
+        },
+        {
+          "name": "batch",
+          "docs": [
+            "Batch numbers are sequential per listing, starting at 1."
+          ],
+          "writable": true,
+          "pda": {
+            "seeds": [
+              {
+                "kind": "const",
+                "value": [
+                  98,
+                  97,
+                  116,
+                  99,
+                  104
+                ]
+              },
+              {
+                "kind": "account",
+                "path": "listing"
+              },
+              {
+                "kind": "account",
+                "path": "listing.next_batch_no",
+                "account": "Listing"
+              }
+            ]
+          }
+        },
+        {
+          "name": "system_program",
+          "address": "11111111111111111111111111111111"
+        },
+        {
+          "name": "event_authority"
+        },
+        {
+          "name": "program"
+        }
+      ],
+      "args": [
+        {
+          "name": "amount",
+          "type": "u64"
+        },
+        {
+          "name": "recipient",
+          "type": "pubkey"
+        },
+        {
+          "name": "doc_hash",
+          "type": {
+            "array": [
+              "u8",
+              32
+            ]
+          }
+        }
+      ]
+    },
+    {
+      "name": "settle",
+      "docs": [
+        "`match_id` is the off-chain match (fill) id; each settles at most once."
+      ],
+      "discriminator": [
+        175,
+        42,
+        185,
+        87,
+        144,
+        131,
+        102,
+        212
+      ],
+      "accounts": [
+        {
+          "name": "settlement_operator",
+          "docs": [
+            "Pays the rent of the `SettlementRecord`."
+          ],
+          "writable": true,
+          "signer": true,
+          "relations": [
+            "config"
+          ]
+        },
+        {
+          "name": "config",
+          "pda": {
+            "seeds": [
+              {
+                "kind": "const",
+                "value": [
+                  99,
+                  111,
+                  110,
+                  102,
+                  105,
+                  103
+                ]
+              }
+            ]
+          }
+        },
+        {
+          "name": "asset_listing",
+          "pda": {
+            "seeds": [
+              {
+                "kind": "const",
+                "value": [
+                  108,
+                  105,
+                  115,
+                  116,
+                  105,
+                  110,
+                  103
+                ]
+              },
+              {
+                "kind": "account",
+                "path": "asset_mint"
+              }
+            ]
+          }
+        },
+        {
+          "name": "payment_listing",
+          "pda": {
+            "seeds": [
+              {
+                "kind": "const",
+                "value": [
+                  108,
+                  105,
+                  115,
+                  116,
+                  105,
+                  110,
+                  103
+                ]
+              },
+              {
+                "kind": "account",
+                "path": "payment_mint"
+              }
+            ]
+          }
+        },
+        {
+          "name": "asset_mint"
+        },
+        {
+          "name": "payment_mint",
+          "docs": [
+            "Always the fee mint (USDT): the seller receives it and pays the fee out",
+            "of it (spec §3.4)."
+          ]
+        },
+        {
+          "name": "seller",
+          "docs": [
+            "seller token accounts below; it does not sign."
+          ]
+        },
+        {
+          "name": "buyer",
+          "docs": [
+            "buyer token accounts below; it does not sign."
+          ]
+        },
+        {
+          "name": "seller_asset_account",
+          "writable": true
+        },
+        {
+          "name": "buyer_asset_account",
+          "writable": true
+        },
+        {
+          "name": "buyer_payment_account",
+          "writable": true
+        },
+        {
+          "name": "seller_payment_account",
+          "writable": true
+        },
+        {
+          "name": "vault_authority",
+          "pda": {
+            "seeds": [
+              {
+                "kind": "const",
+                "value": [
+                  118,
+                  97,
+                  117,
+                  108,
+                  116
+                ]
+              }
+            ]
+          }
+        },
+        {
+          "name": "fee_ledger",
+          "writable": true,
+          "pda": {
+            "seeds": [
+              {
+                "kind": "const",
+                "value": [
+                  102,
+                  101,
+                  101,
+                  115
+                ]
+              },
+              {
+                "kind": "account",
+                "path": "payment_mint"
+              }
+            ]
+          }
+        },
+        {
+          "name": "fee_vault",
+          "writable": true,
+          "pda": {
+            "seeds": [
+              {
+                "kind": "const",
+                "value": [
+                  102,
+                  101,
+                  101,
+                  95,
+                  118,
+                  97,
+                  117,
+                  108,
+                  116
+                ]
+              },
+              {
+                "kind": "account",
+                "path": "payment_mint"
+              }
+            ]
+          }
+        },
+        {
+          "name": "cashback_ledger",
+          "writable": true,
+          "pda": {
+            "seeds": [
+              {
+                "kind": "const",
+                "value": [
+                  99,
+                  97,
+                  115,
+                  104,
+                  98,
+                  97,
+                  99,
+                  107
+                ]
+              },
+              {
+                "kind": "account",
+                "path": "asset_listing"
+              },
+              {
+                "kind": "account",
+                "path": "payment_mint"
+              }
+            ]
+          }
+        },
+        {
+          "name": "settlement_record",
+          "docs": [
+            "Replay guard: `init` fails if this match was already settled."
+          ],
+          "writable": true,
+          "pda": {
+            "seeds": [
+              {
+                "kind": "const",
+                "value": [
+                  115,
+                  101,
+                  116,
+                  116,
+                  108,
+                  101,
+                  100
+                ]
+              },
+              {
+                "kind": "arg",
+                "path": "match_id"
+              }
+            ]
+          }
+        },
+        {
+          "name": "asset_token_program"
+        },
+        {
+          "name": "payment_token_program"
+        },
+        {
+          "name": "system_program",
+          "address": "11111111111111111111111111111111"
+        },
+        {
+          "name": "event_authority"
+        },
+        {
+          "name": "program"
+        }
+      ],
+      "args": [
+        {
+          "name": "match_id",
+          "type": {
+            "array": [
+              "u8",
+              16
+            ]
+          }
+        },
+        {
+          "name": "asset_amount",
+          "type": "u64"
+        },
+        {
+          "name": "payment_amount",
+          "type": "u64"
+        }
+      ]
+    },
+    {
+      "name": "submit_listing",
+      "discriminator": [
+        93,
+        156,
+        165,
+        101,
+        21,
+        250,
+        208,
+        23
+      ],
+      "accounts": [
+        {
+          "name": "issuer",
+          "writable": true,
+          "signer": true
+        },
+        {
+          "name": "asset_mint",
+          "writable": true
+        },
+        {
+          "name": "listing",
+          "writable": true,
+          "pda": {
+            "seeds": [
+              {
+                "kind": "const",
+                "value": [
+                  108,
+                  105,
+                  115,
+                  116,
+                  105,
+                  110,
+                  103
+                ]
+              },
+              {
+                "kind": "account",
+                "path": "asset_mint"
+              }
+            ]
+          }
+        },
+        {
+          "name": "mint_authority",
+          "pda": {
+            "seeds": [
+              {
+                "kind": "const",
+                "value": [
+                  109,
+                  105,
+                  110,
+                  116,
+                  95,
+                  97,
+                  117,
+                  116,
+                  104,
+                  111,
+                  114,
+                  105,
+                  116,
+                  121
+                ]
+              },
+              {
+                "kind": "account",
+                "path": "asset_mint"
+              }
+            ]
+          }
+        },
+        {
+          "name": "token_program"
+        },
+        {
+          "name": "system_program",
+          "address": "11111111111111111111111111111111"
+        },
+        {
+          "name": "event_authority"
+        },
+        {
+          "name": "program"
+        }
+      ],
+      "args": [
+        {
+          "name": "asset_class",
+          "type": {
+            "defined": {
+              "name": "AssetClass"
+            }
+          }
+        },
+        {
+          "name": "doc_hash",
+          "type": {
+            "array": [
+              "u8",
+              32
+            ]
+          }
+        }
+      ]
+    },
+    {
+      "name": "suspend_listing",
+      "discriminator": [
+        155,
+        121,
+        198,
+        186,
+        65,
+        130,
+        215,
+        129
+      ],
+      "accounts": [
+        {
+          "name": "listing_authority",
+          "signer": true,
+          "relations": [
+            "config"
+          ]
+        },
+        {
+          "name": "config",
+          "pda": {
+            "seeds": [
+              {
+                "kind": "const",
+                "value": [
+                  99,
+                  111,
+                  110,
+                  102,
+                  105,
+                  103
+                ]
+              }
+            ]
+          }
+        },
+        {
+          "name": "listing",
+          "writable": true,
+          "pda": {
+            "seeds": [
+              {
+                "kind": "const",
+                "value": [
+                  108,
+                  105,
+                  115,
+                  116,
+                  105,
+                  110,
+                  103
+                ]
+              },
+              {
+                "kind": "account",
+                "path": "listing.asset_mint",
+                "account": "Listing"
+              }
+            ]
+          }
+        },
+        {
+          "name": "event_authority"
+        },
+        {
+          "name": "program"
+        }
+      ],
+      "args": []
+    },
+    {
+      "name": "sweep_excess",
+      "docs": [
+        "Treasury takes the fee vault's balance above what the ledger owes."
+      ],
+      "discriminator": [
+        255,
+        74,
+        219,
+        182,
+        1,
+        126,
+        233,
+        6
+      ],
+      "accounts": [
+        {
+          "name": "treasury",
+          "signer": true,
+          "relations": [
+            "config"
+          ]
+        },
+        {
+          "name": "config",
+          "pda": {
+            "seeds": [
+              {
+                "kind": "const",
+                "value": [
+                  99,
+                  111,
+                  110,
+                  102,
+                  105,
+                  103
+                ]
+              }
+            ]
+          }
+        },
+        {
+          "name": "payment_mint"
+        },
+        {
+          "name": "fee_ledger",
+          "pda": {
+            "seeds": [
+              {
+                "kind": "const",
+                "value": [
+                  102,
+                  101,
+                  101,
+                  115
+                ]
+              },
+              {
+                "kind": "account",
+                "path": "payment_mint"
+              }
+            ]
+          }
+        },
+        {
+          "name": "vault_authority",
+          "pda": {
+            "seeds": [
+              {
+                "kind": "const",
+                "value": [
+                  118,
+                  97,
+                  117,
+                  108,
+                  116
+                ]
+              }
+            ]
+          }
+        },
+        {
+          "name": "fee_vault",
+          "writable": true,
+          "pda": {
+            "seeds": [
+              {
+                "kind": "const",
+                "value": [
+                  102,
+                  101,
+                  101,
+                  95,
+                  118,
+                  97,
+                  117,
+                  108,
+                  116
+                ]
+              },
+              {
+                "kind": "account",
+                "path": "payment_mint"
+              }
+            ]
+          }
+        },
+        {
+          "name": "destination",
+          "writable": true
+        },
+        {
+          "name": "token_program"
+        },
+        {
+          "name": "event_authority"
+        },
+        {
+          "name": "program"
+        }
+      ],
+      "args": []
+    },
+    {
+      "name": "unfreeze_cashback",
+      "discriminator": [
+        49,
+        85,
+        53,
+        54,
+        48,
+        205,
+        2,
+        118
+      ],
+      "accounts": [
+        {
+          "name": "listing_authority",
+          "signer": true,
+          "relations": [
+            "config"
+          ]
+        },
+        {
+          "name": "config",
+          "pda": {
+            "seeds": [
+              {
+                "kind": "const",
+                "value": [
+                  99,
+                  111,
+                  110,
+                  102,
+                  105,
+                  103
+                ]
+              }
+            ]
+          }
+        },
+        {
+          "name": "listing",
+          "writable": true,
+          "pda": {
+            "seeds": [
+              {
+                "kind": "const",
+                "value": [
+                  108,
+                  105,
+                  115,
+                  116,
+                  105,
+                  110,
+                  103
+                ]
+              },
+              {
+                "kind": "account",
+                "path": "listing.asset_mint",
+                "account": "Listing"
+              }
+            ]
+          }
+        },
+        {
+          "name": "event_authority"
+        },
+        {
+          "name": "program"
+        }
+      ],
+      "args": []
+    },
+    {
+      "name": "unpause",
+      "discriminator": [
+        169,
+        144,
+        4,
+        38,
+        10,
+        141,
+        188,
+        255
+      ],
+      "accounts": [
+        {
+          "name": "admin",
+          "signer": true,
+          "relations": [
+            "config"
+          ]
+        },
+        {
+          "name": "config",
+          "writable": true,
+          "pda": {
+            "seeds": [
+              {
+                "kind": "const",
+                "value": [
+                  99,
+                  111,
+                  110,
+                  102,
+                  105,
+                  103
+                ]
+              }
+            ]
+          }
+        },
+        {
+          "name": "event_authority"
+        },
+        {
+          "name": "program"
+        }
+      ],
+      "args": []
+    },
+    {
+      "name": "withdraw_cashback",
+      "discriminator": [
+        72,
+        206,
+        129,
+        45,
+        39,
+        62,
+        126,
+        187
+      ],
+      "accounts": [
+        {
+          "name": "issuer",
+          "signer": true,
+          "relations": [
+            "listing"
+          ]
+        },
+        {
+          "name": "config",
+          "pda": {
+            "seeds": [
+              {
+                "kind": "const",
+                "value": [
+                  99,
+                  111,
+                  110,
+                  102,
+                  105,
+                  103
+                ]
+              }
+            ]
+          }
+        },
+        {
+          "name": "listing",
+          "docs": [
+            "`Currency` listings have `issuer == Pubkey::default()`, which cannot sign."
+          ],
+          "pda": {
+            "seeds": [
+              {
+                "kind": "const",
+                "value": [
+                  108,
+                  105,
+                  115,
+                  116,
+                  105,
+                  110,
+                  103
+                ]
+              },
+              {
+                "kind": "account",
+                "path": "listing.asset_mint",
+                "account": "Listing"
+              }
+            ]
+          }
+        },
+        {
+          "name": "payment_mint"
+        },
+        {
+          "name": "cashback_ledger",
+          "writable": true,
+          "pda": {
+            "seeds": [
+              {
+                "kind": "const",
+                "value": [
+                  99,
+                  97,
+                  115,
+                  104,
+                  98,
+                  97,
+                  99,
+                  107
+                ]
+              },
+              {
+                "kind": "account",
+                "path": "listing"
+              },
+              {
+                "kind": "account",
+                "path": "payment_mint"
+              }
+            ]
+          }
+        },
+        {
+          "name": "fee_ledger",
+          "writable": true,
+          "pda": {
+            "seeds": [
+              {
+                "kind": "const",
+                "value": [
+                  102,
+                  101,
+                  101,
+                  115
+                ]
+              },
+              {
+                "kind": "account",
+                "path": "payment_mint"
+              }
+            ]
+          }
+        },
+        {
+          "name": "vault_authority",
+          "pda": {
+            "seeds": [
+              {
+                "kind": "const",
+                "value": [
+                  118,
+                  97,
+                  117,
+                  108,
+                  116
+                ]
+              }
+            ]
+          }
+        },
+        {
+          "name": "fee_vault",
+          "writable": true,
+          "pda": {
+            "seeds": [
+              {
+                "kind": "const",
+                "value": [
+                  102,
+                  101,
+                  101,
+                  95,
+                  118,
+                  97,
+                  117,
+                  108,
+                  116
+                ]
+              },
+              {
+                "kind": "account",
+                "path": "payment_mint"
+              }
+            ]
+          }
+        },
+        {
+          "name": "destination",
+          "docs": [
+            "Any account of the payment mint, chosen by the issuer."
+          ],
+          "writable": true
+        },
+        {
+          "name": "token_program"
+        },
+        {
+          "name": "event_authority"
+        },
+        {
+          "name": "program"
+        }
+      ],
+      "args": [
+        {
+          "name": "amount",
+          "type": "u64"
+        }
+      ]
+    },
+    {
+      "name": "withdraw_protocol_fees",
+      "discriminator": [
+        11,
+        68,
+        165,
+        98,
+        18,
+        208,
+        134,
+        73
+      ],
+      "accounts": [
+        {
+          "name": "treasury",
+          "signer": true,
+          "relations": [
+            "config"
+          ]
+        },
+        {
+          "name": "config",
+          "pda": {
+            "seeds": [
+              {
+                "kind": "const",
+                "value": [
+                  99,
+                  111,
+                  110,
+                  102,
+                  105,
+                  103
+                ]
+              }
+            ]
+          }
+        },
+        {
+          "name": "payment_mint"
+        },
+        {
+          "name": "fee_ledger",
+          "writable": true,
+          "pda": {
+            "seeds": [
+              {
+                "kind": "const",
+                "value": [
+                  102,
+                  101,
+                  101,
+                  115
+                ]
+              },
+              {
+                "kind": "account",
+                "path": "payment_mint"
+              }
+            ]
+          }
+        },
+        {
+          "name": "vault_authority",
+          "pda": {
+            "seeds": [
+              {
+                "kind": "const",
+                "value": [
+                  118,
+                  97,
+                  117,
+                  108,
+                  116
+                ]
+              }
+            ]
+          }
+        },
+        {
+          "name": "fee_vault",
+          "writable": true,
+          "pda": {
+            "seeds": [
+              {
+                "kind": "const",
+                "value": [
+                  102,
+                  101,
+                  101,
+                  95,
+                  118,
+                  97,
+                  117,
+                  108,
+                  116
+                ]
+              },
+              {
+                "kind": "account",
+                "path": "payment_mint"
+              }
+            ]
+          }
+        },
+        {
+          "name": "destination",
+          "writable": true
+        },
+        {
+          "name": "token_program"
+        },
+        {
+          "name": "event_authority"
+        },
+        {
+          "name": "program"
+        }
+      ],
+      "args": [
+        {
+          "name": "amount",
+          "type": "u64"
+        }
+      ]
+    }
+  ],
+  "accounts": [
+    {
+      "name": "CashbackLedger",
+      "discriminator": [
+        4,
+        115,
+        89,
+        72,
+        83,
+        129,
+        207,
+        35
+      ]
+    },
+    {
+      "name": "Config",
+      "discriminator": [
+        155,
+        12,
+        170,
+        224,
+        30,
+        250,
+        204,
+        130
+      ]
+    },
+    {
+      "name": "Deal",
+      "discriminator": [
+        125,
+        223,
+        160,
+        234,
+        71,
+        162,
+        182,
+        219
+      ]
+    },
+    {
+      "name": "FeeLedger",
+      "discriminator": [
+        224,
+        34,
+        151,
+        237,
+        107,
+        206,
+        212,
+        70
+      ]
+    },
+    {
+      "name": "IssuanceBatch",
+      "discriminator": [
+        39,
+        132,
+        182,
+        200,
+        119,
+        98,
+        88,
+        130
+      ]
+    },
+    {
+      "name": "Listing",
+      "discriminator": [
+        218,
+        32,
+        50,
+        73,
+        43,
+        134,
+        26,
+        58
+      ]
+    },
+    {
+      "name": "PendingChange",
+      "discriminator": [
+        232,
+        183,
+        176,
+        196,
+        15,
+        195,
+        115,
+        147
+      ]
+    },
+    {
+      "name": "SettlementRecord",
+      "discriminator": [
+        172,
+        159,
+        67,
+        74,
+        96,
+        85,
+        37,
+        205
+      ]
+    }
+  ],
+  "events": [
+    {
+      "name": "CashbackFreezeSet",
+      "discriminator": [
+        102,
+        40,
+        145,
+        243,
+        144,
+        28,
+        29,
+        83
+      ]
+    },
+    {
+      "name": "CashbackWithdrawn",
+      "discriminator": [
+        66,
+        55,
+        25,
+        129,
+        52,
+        251,
+        200,
+        225
+      ]
+    },
+    {
+      "name": "ChangeCancelled",
+      "discriminator": [
+        139,
+        179,
+        97,
+        81,
+        214,
+        21,
+        119,
+        93
+      ]
+    },
+    {
+      "name": "ChangeExecuted",
+      "discriminator": [
+        50,
+        115,
+        8,
+        12,
+        139,
+        8,
+        191,
+        26
+      ]
+    },
+    {
+      "name": "ChangeProposed",
+      "discriminator": [
+        170,
+        10,
+        10,
+        8,
+        244,
+        196,
+        146,
+        151
+      ]
+    },
+    {
+      "name": "DealCancelled",
+      "discriminator": [
+        229,
+        189,
+        86,
+        176,
+        134,
+        151,
+        43,
+        152
+      ]
+    },
+    {
+      "name": "DealExecuted",
+      "discriminator": [
+        253,
+        6,
+        141,
+        59,
+        245,
+        221,
+        20,
+        202
+      ]
+    },
+    {
+      "name": "DealExpired",
+      "discriminator": [
+        58,
+        121,
+        96,
+        194,
+        4,
+        160,
+        2,
+        209
+      ]
+    },
+    {
+      "name": "DealOpened",
+      "discriminator": [
+        156,
+        21,
+        27,
+        137,
+        142,
+        158,
+        153,
+        14
+      ]
+    },
+    {
+      "name": "ExcessSwept",
+      "discriminator": [
+        231,
+        176,
+        175,
+        65,
+        146,
+        2,
+        209,
+        157
+      ]
+    },
+    {
+      "name": "FeeVaultInitialized",
+      "discriminator": [
+        135,
+        217,
+        48,
+        80,
+        145,
+        35,
+        200,
+        130
+      ]
+    },
+    {
+      "name": "IssuanceExecuted",
+      "discriminator": [
+        229,
+        198,
+        123,
+        121,
+        225,
+        143,
+        18,
+        173
+      ]
+    },
+    {
+      "name": "IssuanceRejected",
+      "discriminator": [
+        141,
+        51,
+        203,
+        115,
+        99,
+        60,
+        162,
+        182
+      ]
+    },
+    {
+      "name": "IssuanceRequested",
+      "discriminator": [
+        101,
+        141,
+        103,
+        239,
+        200,
+        84,
+        101,
+        13
+      ]
+    },
+    {
+      "name": "ListingApproved",
+      "discriminator": [
+        234,
+        104,
+        5,
+        242,
+        203,
+        238,
+        214,
+        224
+      ]
+    },
+    {
+      "name": "ListingDelisted",
+      "discriminator": [
+        210,
+        153,
+        173,
+        19,
+        59,
+        253,
+        67,
+        145
+      ]
+    },
+    {
+      "name": "ListingFeePaid",
+      "discriminator": [
+        209,
+        52,
+        253,
+        71,
+        233,
+        207,
+        122,
+        27
+      ]
+    },
+    {
+      "name": "ListingQuoted",
+      "discriminator": [
+        161,
+        128,
+        44,
+        250,
+        202,
+        243,
+        6,
+        140
+      ]
+    },
+    {
+      "name": "ListingSubmitted",
+      "discriminator": [
+        226,
+        5,
+        148,
+        139,
+        107,
+        229,
+        155,
+        106
+      ]
+    },
+    {
+      "name": "ListingSuspended",
+      "discriminator": [
+        122,
+        52,
+        205,
+        48,
+        118,
+        99,
+        99,
+        1
+      ]
+    },
+    {
+      "name": "PauseSet",
+      "discriminator": [
+        175,
+        57,
+        198,
+        136,
+        192,
+        66,
+        204,
+        73
+      ]
+    },
+    {
+      "name": "ProtocolFeesWithdrawn",
+      "discriminator": [
+        202,
+        213,
+        134,
+        216,
+        108,
+        14,
+        84,
+        99
+      ]
+    },
+    {
+      "name": "Settled",
+      "discriminator": [
+        232,
+        210,
+        40,
+        17,
+        142,
+        124,
+        145,
+        238
+      ]
+    },
+    {
+      "name": "TokensBurned",
+      "discriminator": [
+        230,
+        255,
+        34,
+        113,
+        226,
+        53,
+        227,
+        9
+      ]
+    }
+  ],
+  "errors": [
+    {
+      "code": 6000,
+      "name": "Unauthorized",
+      "msg": "Signer is not authorized for this action"
+    },
+    {
+      "code": 6001,
+      "name": "InvalidProgramData",
+      "msg": "Program data account does not belong to this program"
+    },
+    {
+      "code": 6002,
+      "name": "NotUpgradeAuthority",
+      "msg": "Signer is not the program upgrade authority"
+    },
+    {
+      "code": 6003,
+      "name": "FeeTooHigh",
+      "msg": "fee_bps exceeds MAX_FEE_BPS"
+    },
+    {
+      "code": 6004,
+      "name": "CashbackTooHigh",
+      "msg": "cashback_bps exceeds 10_000"
+    },
+    {
+      "code": 6005,
+      "name": "InvalidTimelock",
+      "msg": "timelock_secs is outside the allowed range"
+    },
+    {
+      "code": 6006,
+      "name": "InvalidAddress",
+      "msg": "Address must not be the default (all-zero) pubkey"
+    },
+    {
+      "code": 6007,
+      "name": "AlreadyPaused",
+      "msg": "Protocol is already paused"
+    },
+    {
+      "code": 6008,
+      "name": "NotPaused",
+      "msg": "Protocol is not paused"
+    },
+    {
+      "code": 6009,
+      "name": "Paused",
+      "msg": "Protocol is paused"
+    },
+    {
+      "code": 6010,
+      "name": "TimelockNotElapsed",
+      "msg": "Timelock has not elapsed yet"
+    },
+    {
+      "code": 6011,
+      "name": "MathOverflow",
+      "msg": "Arithmetic overflow"
+    },
+    {
+      "code": 6012,
+      "name": "NotMintAuthority",
+      "msg": "Signer is not the mint authority of the asset"
+    },
+    {
+      "code": 6013,
+      "name": "CurrencyNotSubmittable",
+      "msg": "Currency listings are created by the listing authority via list_currency"
+    },
+    {
+      "code": 6014,
+      "name": "EmptyDocHash",
+      "msg": "doc_hash must not be empty"
+    },
+    {
+      "code": 6015,
+      "name": "InvalidStatusTransition",
+      "msg": "Listing status transition is not allowed"
+    },
+    {
+      "code": 6016,
+      "name": "UnsupportedMintExtension",
+      "msg": "Mint has a Token-2022 extension outside the allowlist (MetadataPointer, TokenMetadata)"
+    },
+    {
+      "code": 6017,
+      "name": "FreezeAuthorityNotAllowed",
+      "msg": "Asset mints must not have a freeze authority"
+    },
+    {
+      "code": 6018,
+      "name": "ZeroAmount",
+      "msg": "Amount must be greater than zero"
+    },
+    {
+      "code": 6019,
+      "name": "SelfTrade",
+      "msg": "Buyer and seller must be different"
+    },
+    {
+      "code": 6020,
+      "name": "InvalidCounterparty",
+      "msg": "The vault authority cannot be a counterparty"
+    },
+    {
+      "code": 6021,
+      "name": "InvalidListing",
+      "msg": "Listing does not match the mint"
+    },
+    {
+      "code": 6022,
+      "name": "ListingNotApproved",
+      "msg": "Listing is not approved"
+    },
+    {
+      "code": 6023,
+      "name": "WrongTradingMode",
+      "msg": "Asset class is not traded in this mode"
+    },
+    {
+      "code": 6024,
+      "name": "InvalidPaymentMint",
+      "msg": "Payment mint is not an approved Currency listing"
+    },
+    {
+      "code": 6025,
+      "name": "DelegateNotSet",
+      "msg": "Token account has not delegated to the vault authority"
+    },
+    {
+      "code": 6026,
+      "name": "InsufficientDelegation",
+      "msg": "Delegated amount is lower than the settlement amount"
+    },
+    {
+      "code": 6027,
+      "name": "NotCashbackEligible",
+      "msg": "Listing is not eligible for cashback"
+    },
+    {
+      "code": 6028,
+      "name": "InsufficientCashback",
+      "msg": "Amount exceeds the cashback available to withdraw"
+    },
+    {
+      "code": 6029,
+      "name": "InsufficientProtocolFees",
+      "msg": "Amount exceeds the protocol fees available to withdraw"
+    },
+    {
+      "code": 6030,
+      "name": "InvalidDestination",
+      "msg": "Destination must not be the fee vault"
+    },
+    {
+      "code": 6031,
+      "name": "ZeroSellerProceeds",
+      "msg": "Seller would receive nothing after the fee"
+    },
+    {
+      "code": 6032,
+      "name": "NothingToSweep",
+      "msg": "Fee vault holds no excess over the unwithdrawn fees and cashback"
+    },
+    {
+      "code": 6033,
+      "name": "NonZeroSupply",
+      "msg": "Asset mint must have zero supply when the listing is submitted"
+    },
+    {
+      "code": 6034,
+      "name": "ListingNotIssuable",
+      "msg": "Issuance can only be requested while the listing is Approved"
+    },
+    {
+      "code": 6035,
+      "name": "BatchNotRequested",
+      "msg": "Issuance batch was already executed or rejected"
+    },
+    {
+      "code": 6036,
+      "name": "WrongRecipient",
+      "msg": "Destination is not owned by the batch recipient"
+    },
+    {
+      "code": 6037,
+      "name": "EmptyReference",
+      "msg": "reference must not be empty"
+    },
+    {
+      "code": 6038,
+      "name": "CurrencyNotIssued",
+      "msg": "Currency listings are not issued through Niara"
+    },
+    {
+      "code": 6039,
+      "name": "SameMint",
+      "msg": "Asset and payment mints must be different"
+    },
+    {
+      "code": 6040,
+      "name": "InvalidExpiry",
+      "msg": "expires_at must be in the future and at most 30 days ahead"
+    },
+    {
+      "code": 6041,
+      "name": "DealNotOpen",
+      "msg": "Deal is not open"
+    },
+    {
+      "code": 6042,
+      "name": "DealExpired",
+      "msg": "Deal has expired"
+    },
+    {
+      "code": 6043,
+      "name": "DealNotExpired",
+      "msg": "Deal has not expired yet"
+    },
+    {
+      "code": 6044,
+      "name": "DealAccountMismatch",
+      "msg": "Account does not match the deal"
+    },
+    {
+      "code": 6045,
+      "name": "InvalidTokenAccount",
+      "msg": "Token account has the wrong mint or token program"
+    },
+    {
+      "code": 6046,
+      "name": "MissingCashbackLedger",
+      "msg": "Cashback ledger is required for a cashback-eligible listing"
+    },
+    {
+      "code": 6047,
+      "name": "CashbackFrozen",
+      "msg": "Cashback withdrawals are frozen for this listing"
+    },
+    {
+      "code": 6048,
+      "name": "CashbackAlreadyFrozen",
+      "msg": "Cashback is already frozen for this listing"
+    },
+    {
+      "code": 6049,
+      "name": "CashbackNotFrozen",
+      "msg": "Cashback is not frozen for this listing"
+    },
+    {
+      "code": 6050,
+      "name": "NotFeeMint",
+      "msg": "The trade needs a leg in the fee mint (USDT)"
+    },
+    {
+      "code": 6051,
+      "name": "ZeroMatchId",
+      "msg": "match_id must not be all zeros"
+    },
+    {
+      "code": 6052,
+      "name": "ZeroDealId",
+      "msg": "deal_id must not be all zeros"
+    },
+    {
+      "code": 6053,
+      "name": "AdminChangeNeedsAcceptance",
+      "msg": "An admin change takes effect only when the new admin signs accept_admin"
+    },
+    {
+      "code": 6054,
+      "name": "NotPendingAdmin",
+      "msg": "Signer is not the admin proposed in the pending admin change"
+    },
+    {
+      "code": 6055,
+      "name": "ZeroValuation",
+      "msg": "valuation must be greater than zero"
+    },
+    {
+      "code": 6056,
+      "name": "InvalidListingFeeBps",
+      "msg": "listing_fee_bps must be between 1 and MAX_LISTING_FEE_BPS"
+    },
+    {
+      "code": 6057,
+      "name": "ListingNotQuoted",
+      "msg": "Listing has no listing-fee quote to pay"
+    },
+    {
+      "code": 6058,
+      "name": "QuoteExpired",
+      "msg": "Listing-fee quote has expired"
+    },
+    {
+      "code": 6059,
+      "name": "ListingFeeNotPaid",
+      "msg": "An issuer listing is approved only by paying its listing fee"
+    },
+    {
+      "code": 6060,
+      "name": "CurrencyHasNoListingFee",
+      "msg": "Currency listings pay no listing fee"
+    }
+  ],
+  "types": [
+    {
+      "name": "AssetClass",
+      "docs": [
+        "Asset class. Fixes the trading mode on-chain:",
+        "`Equity` -> order book (delegate); the others -> P2P escrow."
+      ],
+      "type": {
+        "kind": "enum",
+        "variants": [
+          {
+            "name": "Equity"
+          },
+          {
+            "name": "FixedIncome"
+          },
+          {
+            "name": "Credit"
+          },
+          {
+            "name": "Currency"
+          }
+        ]
+      }
+    },
+    {
+      "name": "BatchStatus",
+      "type": {
+        "kind": "enum",
+        "variants": [
+          {
+            "name": "Requested"
+          },
+          {
+            "name": "Executed"
+          },
+          {
+            "name": "Rejected"
+          }
+        ]
+      }
+    },
+    {
+      "name": "BurnReason",
+      "docs": [
+        "Why a holder burned tokens (`burn_with_reason`)."
+      ],
+      "type": {
+        "kind": "enum",
+        "variants": [
+          {
+            "name": "Redemption"
+          },
+          {
+            "name": "Cancellation"
+          }
+        ]
+      }
+    },
+    {
+      "name": "CashbackFreezeSet",
+      "docs": [
+        "Cashback withdrawals for one listing were frozen (`frozen == true`) or",
+        "unfrozen by the listing authority. Accrual is never affected."
+      ],
+      "type": {
+        "kind": "struct",
+        "fields": [
+          {
+            "name": "listing",
+            "type": "pubkey"
+          },
+          {
+            "name": "asset_mint",
+            "type": "pubkey"
+          },
+          {
+            "name": "frozen",
+            "type": "bool"
+          },
+          {
+            "name": "listing_authority",
+            "type": "pubkey"
+          }
+        ]
+      }
+    },
+    {
+      "name": "CashbackLedger",
+      "docs": [
+        "Issuer cashback owed for one listing, in the fee mint it was created for",
+        "(`payment_mint`). PDA: `[\"cashback\", listing, fee_mint]`. Created by",
+        "`init_cashback_ledger` for the current `Config.fee_mint`."
+      ],
+      "type": {
+        "kind": "struct",
+        "fields": [
+          {
+            "name": "listing",
+            "type": "pubkey"
+          },
+          {
+            "name": "payment_mint",
+            "type": "pubkey"
+          },
+          {
+            "name": "accrued",
+            "type": "u64"
+          },
+          {
+            "name": "withdrawn",
+            "type": "u64"
+          },
+          {
+            "name": "bump",
+            "type": "u8"
+          }
+        ]
+      }
+    },
+    {
+      "name": "CashbackWithdrawn",
+      "type": {
+        "kind": "struct",
+        "fields": [
+          {
+            "name": "listing",
+            "type": "pubkey"
+          },
+          {
+            "name": "issuer",
+            "type": "pubkey"
+          },
+          {
+            "name": "payment_mint",
+            "type": "pubkey"
+          },
+          {
+            "name": "destination",
+            "type": "pubkey"
+          },
+          {
+            "name": "amount",
+            "type": "u64"
+          }
+        ]
+      }
+    },
+    {
+      "name": "ChangeCancelled",
+      "type": {
+        "kind": "struct",
+        "fields": [
+          {
+            "name": "change",
+            "type": {
+              "defined": {
+                "name": "ConfigChange"
+              }
+            }
+          }
+        ]
+      }
+    },
+    {
+      "name": "ChangeExecuted",
+      "type": {
+        "kind": "struct",
+        "fields": [
+          {
+            "name": "change",
+            "type": {
+              "defined": {
+                "name": "ConfigChange"
+              }
+            }
+          }
+        ]
+      }
+    },
+    {
+      "name": "ChangeProposed",
+      "type": {
+        "kind": "struct",
+        "fields": [
+          {
+            "name": "change",
+            "type": {
+              "defined": {
+                "name": "ConfigChange"
+              }
+            }
+          },
+          {
+            "name": "execute_after",
+            "type": "i64"
+          }
+        ]
+      }
+    },
+    {
+      "name": "Config",
+      "docs": [
+        "Global protocol configuration. PDA: `[\"config\"]`."
+      ],
+      "type": {
+        "kind": "struct",
+        "fields": [
+          {
+            "name": "admin",
+            "type": "pubkey"
+          },
+          {
+            "name": "listing_authority",
+            "type": "pubkey"
+          },
+          {
+            "name": "settlement_operator",
+            "type": "pubkey"
+          },
+          {
+            "name": "treasury",
+            "type": "pubkey"
+          },
+          {
+            "name": "fee_mint",
+            "docs": [
+              "The USDT mint. Every fee, and so all cashback, is charged in it; one",
+              "fee vault and one fee ledger exist, for this mint (spec §3.4).",
+              "Changed only through the timelock."
+            ],
+            "type": "pubkey"
+          },
+          {
+            "name": "fee_bps",
+            "docs": [
+              "Protocol fee, in bps of the fee-mint leg. Always `<= MAX_FEE_BPS`."
+            ],
+            "type": "u16"
+          },
+          {
+            "name": "cashback_bps",
+            "docs": [
+              "Issuer cashback, in bps **of the fee**. Always `<= BPS_DENOMINATOR`."
+            ],
+            "type": "u16"
+          },
+          {
+            "name": "paused",
+            "docs": [
+              "Circuit breaker. Trading instructions revert while set."
+            ],
+            "type": "bool"
+          },
+          {
+            "name": "timelock_secs",
+            "docs": [
+              "Delay between `propose_change` and `execute_change`. Fixed at init."
+            ],
+            "type": "i64"
+          },
+          {
+            "name": "bump",
+            "type": "u8"
+          }
+        ]
+      }
+    },
+    {
+      "name": "ConfigChange",
+      "docs": [
+        "A timelocked change to `Config`. Each variant has its own pending slot",
+        "(`[\"pending\", kind]`), so at most one proposal per kind is in flight."
+      ],
+      "type": {
+        "kind": "enum",
+        "variants": [
+          {
+            "name": "FeeBps",
+            "fields": [
+              "u16"
+            ]
+          },
+          {
+            "name": "CashbackBps",
+            "fields": [
+              "u16"
+            ]
+          },
+          {
+            "name": "SettlementOperator",
+            "fields": [
+              "pubkey"
+            ]
+          },
+          {
+            "name": "ListingAuthority",
+            "fields": [
+              "pubkey"
+            ]
+          },
+          {
+            "name": "Treasury",
+            "fields": [
+              "pubkey"
+            ]
+          },
+          {
+            "name": "Admin",
+            "fields": [
+              "pubkey"
+            ]
+          },
+          {
+            "name": "FeeMint",
+            "fields": [
+              "pubkey"
+            ]
+          }
+        ]
+      }
+    },
+    {
+      "name": "Deal",
+      "docs": [
+        "A bilateral P2P deal (spec §3.5). PDA: `[\"deal\", proposer, deal_id]`.",
+        "Never closed: once it leaves `Open` it can be neither accepted nor",
+        "refunded again (the status is the replay guard)."
+      ],
+      "type": {
+        "kind": "struct",
+        "fields": [
+          {
+            "name": "deal_id",
+            "docs": [
+              "Off-chain negotiation id (UUID)."
+            ],
+            "type": {
+              "array": [
+                "u8",
+                16
+              ]
+            }
+          },
+          {
+            "name": "proposer",
+            "type": "pubkey"
+          },
+          {
+            "name": "counterparty",
+            "type": "pubkey"
+          },
+          {
+            "name": "asset_mint",
+            "type": "pubkey"
+          },
+          {
+            "name": "payment_mint",
+            "type": "pubkey"
+          },
+          {
+            "name": "asset_amount",
+            "type": "u64"
+          },
+          {
+            "name": "payment_amount",
+            "type": "u64"
+          },
+          {
+            "name": "fee_bps",
+            "docs": [
+              "`Config.fee_bps` and `Config.cashback_bps` when the deal was opened.",
+              "The fee is part of the agreed terms: `accept_deal` charges these, not",
+              "the values in force then."
+            ],
+            "type": "u16"
+          },
+          {
+            "name": "cashback_bps",
+            "type": "u16"
+          },
+          {
+            "name": "proposer_side",
+            "type": {
+              "defined": {
+                "name": "DealSide"
+              }
+            }
+          },
+          {
+            "name": "expires_at",
+            "docs": [
+              "The deal can be accepted while `now < expires_at`, and expired once",
+              "`now >= expires_at`."
+            ],
+            "type": "i64"
+          },
+          {
+            "name": "status",
+            "type": {
+              "defined": {
+                "name": "DealStatus"
+              }
+            }
+          },
+          {
+            "name": "opened_at",
+            "type": "i64"
+          },
+          {
+            "name": "resolved_at",
+            "docs": [
+              "When executed, cancelled or expired; 0 while `Open`."
+            ],
+            "type": "i64"
+          },
+          {
+            "name": "bump",
+            "type": "u8"
+          },
+          {
+            "name": "vault_bump",
+            "docs": [
+              "Bump of the escrow vault `[\"deal_vault\", deal]`."
+            ],
+            "type": "u8"
+          }
+        ]
+      }
+    },
+    {
+      "name": "DealCancelled",
+      "docs": [
+        "The proposer cancelled an open deal and got `deposit_amount` (plus any",
+        "`vault_excess`) of `deposit_mint` back."
+      ],
+      "type": {
+        "kind": "struct",
+        "fields": [
+          {
+            "name": "deal",
+            "type": "pubkey"
+          },
+          {
+            "name": "deal_id",
+            "type": {
+              "array": [
+                "u8",
+                16
+              ]
+            }
+          },
+          {
+            "name": "proposer",
+            "type": "pubkey"
+          },
+          {
+            "name": "deposit_mint",
+            "type": "pubkey"
+          },
+          {
+            "name": "deposit_amount",
+            "type": "u64"
+          },
+          {
+            "name": "vault_excess",
+            "type": "u64"
+          }
+        ]
+      }
+    },
+    {
+      "name": "DealExecuted",
+      "docs": [
+        "A P2P deal executed. Same accounting as `Settled`, on the USDT leg:",
+        "`fee` is in `fee_mint` (the payment mint, or the asset mint when the",
+        "currency sold is USDT) and was deducted from what the receiver of that leg",
+        "got; `cashback` is the part of `fee` credited to the asset issuer (0 for",
+        "`Currency` assets). `vault_excess` is what the escrow vault held beyond the",
+        "deposit (tokens sent to it outside `open_deal`); it went to the",
+        "counterparty with the deposit."
+      ],
+      "type": {
+        "kind": "struct",
+        "fields": [
+          {
+            "name": "deal",
+            "type": "pubkey"
+          },
+          {
+            "name": "deal_id",
+            "type": {
+              "array": [
+                "u8",
+                16
+              ]
+            }
+          },
+          {
+            "name": "proposer",
+            "type": "pubkey"
+          },
+          {
+            "name": "counterparty",
+            "type": "pubkey"
+          },
+          {
+            "name": "asset_mint",
+            "type": "pubkey"
+          },
+          {
+            "name": "payment_mint",
+            "type": "pubkey"
+          },
+          {
+            "name": "proposer_side",
+            "type": {
+              "defined": {
+                "name": "DealSide"
+              }
+            }
+          },
+          {
+            "name": "asset_amount",
+            "type": "u64"
+          },
+          {
+            "name": "payment_amount",
+            "type": "u64"
+          },
+          {
+            "name": "fee_mint",
+            "type": "pubkey"
+          },
+          {
+            "name": "fee",
+            "type": "u64"
+          },
+          {
+            "name": "cashback",
+            "type": "u64"
+          },
+          {
+            "name": "vault_excess",
+            "type": "u64"
+          }
+        ]
+      }
+    },
+    {
+      "name": "DealExpired",
+      "docs": [
+        "An expired deal was refunded to the proposer (permissionless crank)."
+      ],
+      "type": {
+        "kind": "struct",
+        "fields": [
+          {
+            "name": "deal",
+            "type": "pubkey"
+          },
+          {
+            "name": "deal_id",
+            "type": {
+              "array": [
+                "u8",
+                16
+              ]
+            }
+          },
+          {
+            "name": "proposer",
+            "type": "pubkey"
+          },
+          {
+            "name": "deposit_mint",
+            "type": "pubkey"
+          },
+          {
+            "name": "deposit_amount",
+            "type": "u64"
+          },
+          {
+            "name": "vault_excess",
+            "type": "u64"
+          }
+        ]
+      }
+    },
+    {
+      "name": "DealOpened",
+      "docs": [
+        "The proposer escrowed its side of a P2P deal (`asset_amount` if selling,",
+        "`payment_amount` if buying). `fee_bps` and `cashback_bps` are the rates",
+        "fixed for this deal (the config's at open), charged on execution."
+      ],
+      "type": {
+        "kind": "struct",
+        "fields": [
+          {
+            "name": "deal",
+            "type": "pubkey"
+          },
+          {
+            "name": "deal_id",
+            "type": {
+              "array": [
+                "u8",
+                16
+              ]
+            }
+          },
+          {
+            "name": "proposer",
+            "type": "pubkey"
+          },
+          {
+            "name": "counterparty",
+            "type": "pubkey"
+          },
+          {
+            "name": "asset_mint",
+            "type": "pubkey"
+          },
+          {
+            "name": "payment_mint",
+            "type": "pubkey"
+          },
+          {
+            "name": "proposer_side",
+            "type": {
+              "defined": {
+                "name": "DealSide"
+              }
+            }
+          },
+          {
+            "name": "asset_amount",
+            "type": "u64"
+          },
+          {
+            "name": "payment_amount",
+            "type": "u64"
+          },
+          {
+            "name": "fee_bps",
+            "type": "u16"
+          },
+          {
+            "name": "cashback_bps",
+            "type": "u16"
+          },
+          {
+            "name": "expires_at",
+            "type": "i64"
+          }
+        ]
+      }
+    },
+    {
+      "name": "DealSide",
+      "docs": [
+        "The proposer's side of a P2P deal. It decides what the proposer escrows:",
+        "the asset when selling, the payment when buying."
+      ],
+      "type": {
+        "kind": "enum",
+        "variants": [
+          {
+            "name": "Sell"
+          },
+          {
+            "name": "Buy"
+          }
+        ]
+      }
+    },
+    {
+      "name": "DealStatus",
+      "type": {
+        "kind": "enum",
+        "variants": [
+          {
+            "name": "Open"
+          },
+          {
+            "name": "Executed"
+          },
+          {
+            "name": "Cancelled"
+          },
+          {
+            "name": "Expired"
+          }
+        ]
+      }
+    },
+    {
+      "name": "DealTerms",
+      "docs": [
+        "Terms of a P2P deal as agreed off-chain. The mints come from the accounts",
+        "of `open_deal`."
+      ],
+      "type": {
+        "kind": "struct",
+        "fields": [
+          {
+            "name": "counterparty",
+            "docs": [
+              "The only wallet that can accept (v1 has no open offers)."
+            ],
+            "type": "pubkey"
+          },
+          {
+            "name": "proposer_side",
+            "type": {
+              "defined": {
+                "name": "DealSide"
+              }
+            }
+          },
+          {
+            "name": "asset_amount",
+            "docs": [
+              "Raw units of the asset mint."
+            ],
+            "type": "u64"
+          },
+          {
+            "name": "payment_amount",
+            "docs": [
+              "Raw units of the payment mint; the fee is taken out of it."
+            ],
+            "type": "u64"
+          }
+        ]
+      }
+    },
+    {
+      "name": "ExcessSwept",
+      "docs": [
+        "Unaccounted tokens (sent to the fee vault outside `settle`) swept by the",
+        "treasury. `vault_balance_after` equals the unwithdrawn fees and cashback."
+      ],
+      "type": {
+        "kind": "struct",
+        "fields": [
+          {
+            "name": "treasury",
+            "type": "pubkey"
+          },
+          {
+            "name": "payment_mint",
+            "type": "pubkey"
+          },
+          {
+            "name": "destination",
+            "type": "pubkey"
+          },
+          {
+            "name": "amount",
+            "type": "u64"
+          },
+          {
+            "name": "vault_balance_after",
+            "type": "u64"
+          }
+        ]
+      }
+    },
+    {
+      "name": "FeeLedger",
+      "docs": [
+        "Fee accounting for the fee mint (`payment_mint`, USDT). PDA:",
+        "`[\"fees\", fee_mint]`. Created by `init_fee_vault` together with the fee",
+        "vault `[\"fee_vault\", fee_mint]`. One exists per fee mint ever configured",
+        "(normally one); a timelocked fee-mint switch leaves the old one",
+        "withdrawable.",
+        "",
+        "`fees_collected` is the gross trading fee (protocol share + cashback);",
+        "`listing_fees_collected` is protocol revenue only. Derived:",
+        "- protocol share accrued =",
+        "`fees_collected - cashback_accrued + listing_fees_collected`",
+        "- unwithdrawn =",
+        "`fees_collected + listing_fees_collected - protocol_withdrawn - cashback_withdrawn`",
+        "",
+        "Invariant 4: the fee vault balance equals the unwithdrawn amount. Anyone",
+        "can transfer tokens into the vault, so between sweeps it is `>=`; such",
+        "donations are not accounted, cannot be withdrawn as fees or cashback, and",
+        "`sweep_excess` (treasury) moves them out, restoring equality."
+      ],
+      "type": {
+        "kind": "struct",
+        "fields": [
+          {
+            "name": "payment_mint",
+            "type": "pubkey"
+          },
+          {
+            "name": "fees_collected",
+            "docs": [
+              "Trading fees (`settle`, `accept_deal`), cashback share included."
+            ],
+            "type": "u64"
+          },
+          {
+            "name": "cashback_accrued",
+            "docs": [
+              "Sum of `CashbackLedger::accrued` over all listings, in this mint."
+            ],
+            "type": "u64"
+          },
+          {
+            "name": "protocol_withdrawn",
+            "type": "u64"
+          },
+          {
+            "name": "cashback_withdrawn",
+            "docs": [
+              "Sum of `CashbackLedger::withdrawn` over all listings, in this mint."
+            ],
+            "type": "u64"
+          },
+          {
+            "name": "bump",
+            "type": "u8"
+          },
+          {
+            "name": "vault_bump",
+            "type": "u8"
+          },
+          {
+            "name": "listing_fees_collected",
+            "docs": [
+              "Listing fees paid in this mint (`pay_listing_fee`, spec §3.13). No",
+              "cashback share. Appended last."
+            ],
+            "type": "u64"
+          }
+        ]
+      }
+    },
+    {
+      "name": "FeeVaultInitialized",
+      "docs": [
+        "The fee vault and fee ledger of `fee_mint` exist; fees in it can be",
+        "collected from now on."
+      ],
+      "type": {
+        "kind": "struct",
+        "fields": [
+          {
+            "name": "fee_mint",
+            "type": "pubkey"
+          },
+          {
+            "name": "fee_vault",
+            "type": "pubkey"
+          },
+          {
+            "name": "fee_ledger",
+            "type": "pubkey"
+          }
+        ]
+      }
+    },
+    {
+      "name": "InitializeConfigParams",
+      "type": {
+        "kind": "struct",
+        "fields": [
+          {
+            "name": "listing_authority",
+            "type": "pubkey"
+          },
+          {
+            "name": "settlement_operator",
+            "type": "pubkey"
+          },
+          {
+            "name": "treasury",
+            "type": "pubkey"
+          },
+          {
+            "name": "fee_mint",
+            "docs": [
+              "The USDT mint (spec §3.4). `init_fee_vault` then creates its vault."
+            ],
+            "type": "pubkey"
+          },
+          {
+            "name": "fee_bps",
+            "type": "u16"
+          },
+          {
+            "name": "cashback_bps",
+            "type": "u16"
+          },
+          {
+            "name": "timelock_secs",
+            "type": "i64"
+          }
+        ]
+      }
+    },
+    {
+      "name": "IssuanceBatch",
+      "docs": [
+        "One requested increase of supply (spec §3.12). PDA:",
+        "`[\"batch\", listing, batch_no (u64 LE)]`. Never closed: it is the on-chain",
+        "issuance record."
+      ],
+      "type": {
+        "kind": "struct",
+        "fields": [
+          {
+            "name": "listing",
+            "type": "pubkey"
+          },
+          {
+            "name": "batch_no",
+            "type": "u64"
+          },
+          {
+            "name": "amount",
+            "type": "u64"
+          },
+          {
+            "name": "recipient",
+            "docs": [
+              "Wallet that receives the tokens: the holder of record."
+            ],
+            "type": "pubkey"
+          },
+          {
+            "name": "doc_hash",
+            "docs": [
+              "Hash of the document authorizing the batch, registered in Niara-Register."
+            ],
+            "type": {
+              "array": [
+                "u8",
+                32
+              ]
+            }
+          },
+          {
+            "name": "status",
+            "type": {
+              "defined": {
+                "name": "BatchStatus"
+              }
+            }
+          },
+          {
+            "name": "requested_at",
+            "type": "i64"
+          },
+          {
+            "name": "resolved_at",
+            "docs": [
+              "When approved or rejected; 0 while `Requested`."
+            ],
+            "type": "i64"
+          },
+          {
+            "name": "bump",
+            "type": "u8"
+          }
+        ]
+      }
+    },
+    {
+      "name": "IssuanceExecuted",
+      "docs": [
+        "A batch was minted. `recipient` is the holder wallet; `destination` the",
+        "token account (owned by `recipient`) that received the tokens."
+      ],
+      "type": {
+        "kind": "struct",
+        "fields": [
+          {
+            "name": "asset_mint",
+            "type": "pubkey"
+          },
+          {
+            "name": "batch_no",
+            "type": "u64"
+          },
+          {
+            "name": "amount",
+            "type": "u64"
+          },
+          {
+            "name": "recipient",
+            "type": "pubkey"
+          },
+          {
+            "name": "doc_hash",
+            "type": {
+              "array": [
+                "u8",
+                32
+              ]
+            }
+          },
+          {
+            "name": "destination",
+            "type": "pubkey"
+          }
+        ]
+      }
+    },
+    {
+      "name": "IssuanceRejected",
+      "type": {
+        "kind": "struct",
+        "fields": [
+          {
+            "name": "asset_mint",
+            "type": "pubkey"
+          },
+          {
+            "name": "batch_no",
+            "type": "u64"
+          },
+          {
+            "name": "amount",
+            "type": "u64"
+          },
+          {
+            "name": "recipient",
+            "type": "pubkey"
+          }
+        ]
+      }
+    },
+    {
+      "name": "IssuanceRequested",
+      "type": {
+        "kind": "struct",
+        "fields": [
+          {
+            "name": "listing",
+            "type": "pubkey"
+          },
+          {
+            "name": "asset_mint",
+            "type": "pubkey"
+          },
+          {
+            "name": "batch_no",
+            "type": "u64"
+          },
+          {
+            "name": "amount",
+            "type": "u64"
+          },
+          {
+            "name": "recipient",
+            "type": "pubkey"
+          },
+          {
+            "name": "doc_hash",
+            "type": {
+              "array": [
+                "u8",
+                32
+              ]
+            }
+          }
+        ]
+      }
+    },
+    {
+      "name": "Listing",
+      "docs": [
+        "Listing of an asset mint. PDA: `[\"listing\", asset_mint]`."
+      ],
+      "type": {
+        "kind": "struct",
+        "fields": [
+          {
+            "name": "asset_mint",
+            "type": "pubkey"
+          },
+          {
+            "name": "issuer",
+            "docs": [
+              "Mint authority at submission time. `Pubkey::default()` for `Currency`",
+              "listings, which have no issuer on Niara."
+            ],
+            "type": "pubkey"
+          },
+          {
+            "name": "asset_class",
+            "type": {
+              "defined": {
+                "name": "AssetClass"
+              }
+            }
+          },
+          {
+            "name": "status",
+            "type": {
+              "defined": {
+                "name": "ListingStatus"
+              }
+            }
+          },
+          {
+            "name": "cashback_eligible",
+            "type": "bool"
+          },
+          {
+            "name": "doc_hash",
+            "docs": [
+              "Hash of the offering document (registered in Niara-Register)."
+            ],
+            "type": {
+              "array": [
+                "u8",
+                32
+              ]
+            }
+          },
+          {
+            "name": "approved_at",
+            "docs": [
+              "Unix timestamp of the latest approval; 0 until approved."
+            ],
+            "type": "i64"
+          },
+          {
+            "name": "next_batch_no",
+            "docs": [
+              "Number of the next issuance batch (batches are numbered from 1).",
+              "0 for `Currency` listings, which have no issuance."
+            ],
+            "type": "u64"
+          },
+          {
+            "name": "issued",
+            "docs": [
+              "Sum of executed issuance batches."
+            ],
+            "type": "u64"
+          },
+          {
+            "name": "burned",
+            "docs": [
+              "Sum of burns through `burn_with_reason`. Invariant 11:",
+              "`supply == issued - burned` (on-chain `<=`: holders can also burn",
+              "directly through the token program)."
+            ],
+            "type": "u64"
+          },
+          {
+            "name": "cashback_frozen",
+            "docs": [
+              "Set by the listing authority (no timelock) to stop `withdraw_cashback`",
+              "for this listing, e.g. after an issuer key compromise (spec §9.5).",
+              "Cashback keeps accruing while frozen."
+            ],
+            "type": "bool"
+          },
+          {
+            "name": "valuation",
+            "docs": [
+              "Issuer valuation in base units of `listing_fee_mint`. Public on-chain."
+            ],
+            "type": "u64"
+          },
+          {
+            "name": "listing_fee_bps",
+            "docs": [
+              "`1..=MAX_LISTING_FEE_BPS` once quoted."
+            ],
+            "type": "u16"
+          },
+          {
+            "name": "listing_fee",
+            "docs": [
+              "`ceil(valuation * listing_fee_bps / 10_000)`."
+            ],
+            "type": "u64"
+          },
+          {
+            "name": "listing_fee_mint",
+            "docs": [
+              "`Config.fee_mint` at `quote_listing`: the unit of `valuation` and",
+              "`listing_fee`, and the only mint `pay_listing_fee` accepts."
+            ],
+            "type": "pubkey"
+          },
+          {
+            "name": "quote_expires_at",
+            "docs": [
+              "The quote can be paid while `now < quote_expires_at`."
+            ],
+            "type": "i64"
+          },
+          {
+            "name": "listing_fee_paid",
+            "docs": [
+              "0 until `pay_listing_fee`, then `listing_fee` (invariant 13)."
+            ],
+            "type": "u64"
+          },
+          {
+            "name": "bump",
+            "type": "u8"
+          }
+        ]
+      }
+    },
+    {
+      "name": "ListingApproved",
+      "type": {
+        "kind": "struct",
+        "fields": [
+          {
+            "name": "listing",
+            "type": "pubkey"
+          },
+          {
+            "name": "asset_mint",
+            "type": "pubkey"
+          },
+          {
+            "name": "issuer",
+            "type": "pubkey"
+          },
+          {
+            "name": "asset_class",
+            "type": {
+              "defined": {
+                "name": "AssetClass"
+              }
+            }
+          },
+          {
+            "name": "cashback_eligible",
+            "type": "bool"
+          },
+          {
+            "name": "doc_hash",
+            "type": {
+              "array": [
+                "u8",
+                32
+              ]
+            }
+          },
+          {
+            "name": "approved_at",
+            "type": "i64"
+          }
+        ]
+      }
+    },
+    {
+      "name": "ListingDelisted",
+      "type": {
+        "kind": "struct",
+        "fields": [
+          {
+            "name": "listing",
+            "type": "pubkey"
+          },
+          {
+            "name": "asset_mint",
+            "type": "pubkey"
+          }
+        ]
+      }
+    },
+    {
+      "name": "ListingFeePaid",
+      "docs": [
+        "The issuer paid the listing fee into the fee vault (protocol revenue, no",
+        "cashback). Followed by `ListingApproved` in the same instruction."
+      ],
+      "type": {
+        "kind": "struct",
+        "fields": [
+          {
+            "name": "listing",
+            "type": "pubkey"
+          },
+          {
+            "name": "asset_mint",
+            "type": "pubkey"
+          },
+          {
+            "name": "issuer",
+            "type": "pubkey"
+          },
+          {
+            "name": "fee_mint",
+            "type": "pubkey"
+          },
+          {
+            "name": "valuation",
+            "type": "u64"
+          },
+          {
+            "name": "listing_fee_bps",
+            "type": "u16"
+          },
+          {
+            "name": "amount",
+            "type": "u64"
+          }
+        ]
+      }
+    },
+    {
+      "name": "ListingQuoted",
+      "docs": [
+        "The listing authority quoted the listing fee (spec §3.13). `valuation` and",
+        "`listing_fee` are in base units of `fee_mint`; the quote can be paid while",
+        "`now < expires_at`. A re-quote emits a new event that replaces this one."
+      ],
+      "type": {
+        "kind": "struct",
+        "fields": [
+          {
+            "name": "listing",
+            "type": "pubkey"
+          },
+          {
+            "name": "asset_mint",
+            "type": "pubkey"
+          },
+          {
+            "name": "fee_mint",
+            "type": "pubkey"
+          },
+          {
+            "name": "valuation",
+            "type": "u64"
+          },
+          {
+            "name": "listing_fee_bps",
+            "type": "u16"
+          },
+          {
+            "name": "listing_fee",
+            "type": "u64"
+          },
+          {
+            "name": "expires_at",
+            "type": "i64"
+          }
+        ]
+      }
+    },
+    {
+      "name": "ListingStatus",
+      "docs": [
+        "Variants are only ever appended: the discriminant is stored on-chain."
+      ],
+      "type": {
+        "kind": "enum",
+        "variants": [
+          {
+            "name": "Pending"
+          },
+          {
+            "name": "Approved"
+          },
+          {
+            "name": "Suspended"
+          },
+          {
+            "name": "Delisted"
+          },
+          {
+            "name": "Quoted"
+          }
+        ]
+      }
+    },
+    {
+      "name": "ListingSubmitted",
+      "type": {
+        "kind": "struct",
+        "fields": [
+          {
+            "name": "listing",
+            "type": "pubkey"
+          },
+          {
+            "name": "asset_mint",
+            "type": "pubkey"
+          },
+          {
+            "name": "issuer",
+            "type": "pubkey"
+          },
+          {
+            "name": "asset_class",
+            "type": {
+              "defined": {
+                "name": "AssetClass"
+              }
+            }
+          },
+          {
+            "name": "doc_hash",
+            "type": {
+              "array": [
+                "u8",
+                32
+              ]
+            }
+          }
+        ]
+      }
+    },
+    {
+      "name": "ListingSuspended",
+      "type": {
+        "kind": "struct",
+        "fields": [
+          {
+            "name": "listing",
+            "type": "pubkey"
+          },
+          {
+            "name": "asset_mint",
+            "type": "pubkey"
+          }
+        ]
+      }
+    },
+    {
+      "name": "PauseSet",
+      "type": {
+        "kind": "struct",
+        "fields": [
+          {
+            "name": "paused",
+            "type": "bool"
+          },
+          {
+            "name": "admin",
+            "type": "pubkey"
+          }
+        ]
+      }
+    },
+    {
+      "name": "PendingChange",
+      "docs": [
+        "A proposed `ConfigChange` waiting for its timelock. PDA: `[\"pending\", kind]`."
+      ],
+      "type": {
+        "kind": "struct",
+        "fields": [
+          {
+            "name": "change",
+            "type": {
+              "defined": {
+                "name": "ConfigChange"
+              }
+            }
+          },
+          {
+            "name": "execute_after",
+            "type": "i64"
+          },
+          {
+            "name": "bump",
+            "type": "u8"
+          }
+        ]
+      }
+    },
+    {
+      "name": "ProtocolFeesWithdrawn",
+      "type": {
+        "kind": "struct",
+        "fields": [
+          {
+            "name": "treasury",
+            "type": "pubkey"
+          },
+          {
+            "name": "payment_mint",
+            "type": "pubkey"
+          },
+          {
+            "name": "destination",
+            "type": "pubkey"
+          },
+          {
+            "name": "amount",
+            "type": "u64"
+          }
+        ]
+      }
+    },
+    {
+      "name": "Settled",
+      "docs": [
+        "One order-book settlement. `match_id` is the off-chain match (fill) id.",
+        "`payment_amount == seller_receives + fee`; `cashback` is the part of `fee`",
+        "credited to the asset issuer."
+      ],
+      "type": {
+        "kind": "struct",
+        "fields": [
+          {
+            "name": "match_id",
+            "type": {
+              "array": [
+                "u8",
+                16
+              ]
+            }
+          },
+          {
+            "name": "asset_mint",
+            "type": "pubkey"
+          },
+          {
+            "name": "payment_mint",
+            "type": "pubkey"
+          },
+          {
+            "name": "buyer",
+            "type": "pubkey"
+          },
+          {
+            "name": "seller",
+            "type": "pubkey"
+          },
+          {
+            "name": "asset_amount",
+            "type": "u64"
+          },
+          {
+            "name": "payment_amount",
+            "type": "u64"
+          },
+          {
+            "name": "fee",
+            "type": "u64"
+          },
+          {
+            "name": "cashback",
+            "type": "u64"
+          }
+        ]
+      }
+    },
+    {
+      "name": "SettlementRecord",
+      "docs": [
+        "Replay guard for one settled match. PDA: `[\"settled\", match_id]`.",
+        "Never closed: closing it would allow the same `match_id` to settle again."
+      ],
+      "type": {
+        "kind": "struct",
+        "fields": [
+          {
+            "name": "bump",
+            "type": "u8"
+          }
+        ]
+      }
+    },
+    {
+      "name": "TokensBurned",
+      "type": {
+        "kind": "struct",
+        "fields": [
+          {
+            "name": "asset_mint",
+            "type": "pubkey"
+          },
+          {
+            "name": "holder",
+            "type": "pubkey"
+          },
+          {
+            "name": "holder_account",
+            "type": "pubkey"
+          },
+          {
+            "name": "amount",
+            "type": "u64"
+          },
+          {
+            "name": "reason",
+            "type": {
+              "defined": {
+                "name": "BurnReason"
+              }
+            }
+          },
+          {
+            "name": "reference",
+            "type": {
+              "array": [
+                "u8",
+                32
+              ]
+            }
+          }
+        ]
+      }
+    }
+  ],
+  "constants": [
+    {
+      "name": "BATCH_SEED",
+      "docs": [
+        "Per issuance batch: `[\"batch\", listing, batch_no (u64 LE)]`."
+      ],
+      "type": "bytes",
+      "value": "[98, 97, 116, 99, 104]"
+    },
+    {
+      "name": "BPS_DENOMINATOR",
+      "type": "u16",
+      "value": "10000"
+    },
+    {
+      "name": "CASHBACK_SEED",
+      "docs": [
+        "Per (listing, payment mint): `[\"cashback\", listing, payment_mint]`."
+      ],
+      "type": "bytes",
+      "value": "[99, 97, 115, 104, 98, 97, 99, 107]"
+    },
+    {
+      "name": "CONFIG_SEED",
+      "type": "bytes",
+      "value": "[99, 111, 110, 102, 105, 103]"
+    },
+    {
+      "name": "DEAL_SEED",
+      "docs": [
+        "Per P2P deal: `[\"deal\", proposer, deal_id]`. Never closed: its status is",
+        "the replay guard."
+      ],
+      "type": "bytes",
+      "value": "[100, 101, 97, 108]"
+    },
+    {
+      "name": "DEAL_VAULT_SEED",
+      "docs": [
+        "Per P2P deal: `[\"deal_vault\", deal]` escrow token account whose authority is",
+        "the deal PDA. Closed when the deal is executed, cancelled or expired."
+      ],
+      "type": "bytes",
+      "value": "[100, 101, 97, 108, 95, 118, 97, 117, 108, 116]"
+    },
+    {
+      "name": "FEE_LEDGER_SEED",
+      "docs": [
+        "Per payment mint: `[\"fees\", payment_mint]` fee ledger."
+      ],
+      "type": "bytes",
+      "value": "[102, 101, 101, 115]"
+    },
+    {
+      "name": "FEE_VAULT_SEED",
+      "docs": [
+        "Per payment mint: `[\"fee_vault\", payment_mint]` token account."
+      ],
+      "type": "bytes",
+      "value": "[102, 101, 101, 95, 118, 97, 117, 108, 116]"
+    },
+    {
+      "name": "LISTING_SEED",
+      "type": "bytes",
+      "value": "[108, 105, 115, 116, 105, 110, 103]"
+    },
+    {
+      "name": "MAX_DEAL_DURATION_SECS",
+      "docs": [
+        "Longest a P2P deal may stay open: `expires_at <= now + 30 days`."
+      ],
+      "type": "i64",
+      "value": "2592000"
+    },
+    {
+      "name": "MAX_FEE_BPS",
+      "docs": [
+        "Hard cap on the protocol fee: 0.5% of the fee-mint (USDT) leg. Business",
+        "rule: Niara charges at most 0.5%."
+      ],
+      "type": "u16",
+      "value": "50"
+    },
+    {
+      "name": "MAX_LISTING_FEE_BPS",
+      "docs": [
+        "Hard cap on the listing fee: 1% of the issuer's valuation (spec §3.13).",
+        "Business rule; the 0.1% floor is pricing policy and is not enforced."
+      ],
+      "type": "u16",
+      "value": "100"
+    },
+    {
+      "name": "MAX_QUOTE_DURATION_SECS",
+      "docs": [
+        "Longest a listing-fee quote stays payable: `expires_at <= now + 30 days`."
+      ],
+      "type": "i64",
+      "value": "2592000"
+    },
+    {
+      "name": "MAX_TIMELOCK_SECS",
+      "type": "i64",
+      "value": "2592000"
+    },
+    {
+      "name": "MINT_AUTHORITY_SEED",
+      "docs": [
+        "Per asset mint: `[\"mint_authority\", asset_mint]`, the mint authority of",
+        "every issuer-listed asset after `submit_listing`. Holds no data."
+      ],
+      "type": "bytes",
+      "value": "[109, 105, 110, 116, 95, 97, 117, 116, 104, 111, 114, 105, 116, 121]"
+    },
+    {
+      "name": "MIN_TIMELOCK_SECS",
+      "docs": [
+        "Bounds for the admin timelock. The lower bound keeps the timelock meaningful;",
+        "the upper bound prevents bricking the config with an unreachable delay."
+      ],
+      "type": "i64",
+      "value": "60"
+    },
+    {
+      "name": "PENDING_SEED",
+      "type": "bytes",
+      "value": "[112, 101, 110, 100, 105, 110, 103]"
+    },
+    {
+      "name": "SETTLED_SEED",
+      "docs": [
+        "Per settled match: `[\"settled\", match_id]` replay guard."
+      ],
+      "type": "bytes",
+      "value": "[115, 101, 116, 116, 108, 101, 100]"
+    },
+    {
+      "name": "VAULT_SEED",
+      "docs": [
+        "PDA signer for delegated transfers and the fee vaults. Holds no data."
+      ],
+      "type": "bytes",
+      "value": "[118, 97, 117, 108, 116]"
+    }
+  ]
+}

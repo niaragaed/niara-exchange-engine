@@ -1,6 +1,6 @@
 import { randomUUID } from "node:crypto";
 import { serve } from "@hono/node-server";
-import { ConfigError, describeConfig, loadConfig } from "../config.ts";
+import { ConfigError, describeConfig, loadConfig, redactSecrets } from "../config.ts";
 import { connectPg } from "../db/pg.ts";
 import { randomMatchId } from "../engine/random-id.ts";
 import { createApp } from "./http.ts";
@@ -14,8 +14,9 @@ import { NotSingleInstanceError, OrderService, ServiceRoleError } from "./order-
  * the database on start.
  */
 
+/** Every log line goes through redactSecrets: driver errors can quote the database URL. */
 function log(event: string, data: Record<string, unknown> = {}): void {
-  console.log(JSON.stringify({ at: new Date().toISOString(), event, ...data }));
+  console.log(redactSecrets(JSON.stringify({ at: new Date().toISOString(), event, ...data })));
 }
 
 async function main(): Promise<void> {

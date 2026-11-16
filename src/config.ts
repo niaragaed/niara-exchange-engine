@@ -95,9 +95,45 @@ export function loadConfig(env: Env = process.env): ServiceConfig {
   };
 }
 
-/** The configuration as safe to log: the database URL without its password. */
+/**
+ * The configuration as safe to log: no part of the database URL (user, host, port,
+ * database, password) and no RPC URL, which may hold an API key.
+ */
 export function describeConfig(c: ServiceConfig): Record<string, string | number> {
-  const url = new URL(c.databaseUrl);
-  if (url.password) url.password = "***";
-  return { ...c, databaseUrl: url.toString() };
+  const { databaseUrl: _db, ...rest } = c;
+  return { ...rest, databaseUrl: "(set, not shown)" };
+}
+
+/**
+ * Removes every secret-bearing value from a text before it is logged: the database
+ * URL and each of its parts, the Solana RPC URL and its path/query (API keys), and the
+ * Supabase service role key. Error messages from drivers can quote any of them.
+ */
+export function redactSecrets(text: string, env: Readonly<Record<string, string | undefined>> = process.env): string {
+  const secrets: string[] = [];
+  for (const name of ["DATABASE_URL", "SOLANA_RPC_URL"]) {
+    const raw = env[name];
+    if (!raw) continue;
+    secrets.push(raw);
+    try {
+      const u = new URL(raw);
+      secrets.push(
+        decodeURIComponent(u.password),
+        u.password,
+        decodeURIComponent(u.username),
+        u.username,
+        u.host,
+        u.hostname,
+        u.pathname.length > 1 ? u.pathname : "",
+        u.search,
+        ...u.searchParams.values(),
+      );
+    } catch {
+      // not a URL: the raw value is redacted
+    }
+  }
+  if (env["SUPABASE_SERVICE_ROLE_KEY"]) secrets.push(env["SUPABASE_SERVICE_ROLE_KEY"]);
+  let out = text;
+  for (const s of secrets.filter((x) => x.length >= 3).sort((a, b) => b.length - a.length)) out = out.split(s).join("***");
+  return out;
 }

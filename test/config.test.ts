@@ -1,7 +1,7 @@
 import { readFileSync } from "node:fs";
 import { join } from "node:path";
 import { describe, expect, it } from "vitest";
-import { ConfigError, describeConfig, loadConfig } from "../src/config.ts";
+import { ConfigError, describeConfig, loadConfig, redactSecrets } from "../src/config.ts";
 
 // TEST ONLY: a placeholder URL, not a real database or password.
 const URL_OK = "postgresql://test_login:test-password-123@db.example.invalid:5432/postgres";
@@ -52,10 +52,22 @@ describe("loadConfig", () => {
     ).not.toThrow();
   });
 
-  it("never logs the database password", () => {
-    const shown = describeConfig(loadConfig({ DATABASE_URL: URL_OK }));
-    expect(JSON.stringify(shown)).not.toContain("test-password-123");
-    expect(shown["databaseUrl"]).toContain("***");
+  it("never logs any part of the database URL", () => {
+    const shown = JSON.stringify(describeConfig(loadConfig({ DATABASE_URL: URL_OK })));
+    for (const part of ["test-password-123", "test_login", "db.example.invalid", "5432"]) expect(shown).not.toContain(part);
+  });
+
+  it("redacts the database URL, its parts and the RPC URL from error text", () => {
+    const env = {
+      DATABASE_URL: URL_OK,
+      SOLANA_RPC_URL: "https://rpc.example.invalid/?api-key=test-key-abc",
+    };
+    const text =
+      'password authentication failed for user "test_login" at db.example.invalid:5432; ' +
+      "fetch https://rpc.example.invalid/?api-key=test-key-abc failed; key test-key-abc";
+    const out = redactSecrets(text, env);
+    for (const part of ["test_login", "db.example.invalid", "test-key-abc", "rpc.example.invalid"]) expect(out).not.toContain(part);
+    expect(redactSecrets("nothing secret here", env)).toBe("nothing secret here");
   });
 
   it(".env.example parses, holds placeholders only, and documents every variable", () => {
