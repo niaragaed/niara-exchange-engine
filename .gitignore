@@ -1,0 +1,20 @@
+node_modules/
+dist/
+coverage/
+*.log
+
+# Secrets: never commit these (see CLAUDE.md).
+.env
+.env.*
+!.env.example
+*-keypair.json
+*keypair*.json
+id.json
+*.key
+*.pem
+keys/
+.secrets/
+
+# Supabase CLI local state (no local stack on this machine).
+supabase/.temp/
+supabase/.branches/
