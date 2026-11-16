@@ -15,6 +15,8 @@ import { admitCancelIntent, parseCancelIntent } from "../intents/cancel.ts";
 import { IntentError } from "../intents/types.ts";
 import { parseOrderIntent } from "../intents/validate.ts";
 import { admitOrderIntent } from "../intents/verify.ts";
+import { loadSettlement } from "../db/settlements.ts";
+import { isUuidV4 } from "../engine/ids.ts";
 import { orderNeed, type CoverageChecker } from "../solana/coverage.ts";
 import { buildCatalog, canonicalAddress, type Catalog } from "./catalog.ts";
 import { persistEvents, persistPlacement } from "./persist.ts";
@@ -390,6 +392,24 @@ export class OrderService {
         },
       };
     });
+  }
+
+  /**
+   * A match's settlement state: public fields only (no wallets). Match ids are random
+   * UUID v4s, handed to the two parties in the order responses.
+   */
+  async settlementStatus(matchId: string): Promise<Reply> {
+    if (!isUuidV4(matchId)) return error(404, "unknown_match");
+    const row = await asServiceRole(this.deps.db, (tx) => loadSettlement(tx, matchId));
+    if (!row) return error(404, "unknown_match");
+    return {
+      status: 200,
+      body: {
+        matchId: row.matchId,
+        status: row.matchStatus,
+        settlement: row.status === null ? null : { status: row.status, attempts: row.attempts, txHash: row.txHash, error: row.error },
+      },
+    };
   }
 
   /** Takes every order that is no longer matchable out of the books and stores it expired. */

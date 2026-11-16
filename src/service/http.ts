@@ -9,6 +9,7 @@ import type { OrderService, Reply } from "./order-service.ts";
  *   POST /v1/orders          { intent, signature }   submit a signed order intent
  *   POST /v1/orders/cancel   { cancel, signature }   cancel an order (signed, by nonce)
  *   GET  /v1/books/:chain/:asset                     public book (price levels only)
+ *   GET  /v1/matches/:id                             a match's settlement status and tx hash
  *   GET  /health
  *
  * Bodies above `maxBodyBytes` are refused with 413 before they are parsed.
@@ -50,8 +51,10 @@ export function createApp(
 
   app.get("/v1/books/:chain/:asset", async (c) => send(c, await service.book(c.req.param("chain"), c.req.param("asset"))));
 
+  app.get("/v1/matches/:id", async (c) => send(c, await service.settlementStatus(c.req.param("id"))));
+
   app.get("/health", (c) =>
-    c.json({ status: "ok", testnet: true, notice: "TESTNET ONLY: no real assets, no real money. Matches are not settled by this service." }),
+    c.json({ status: "ok", testnet: true, notice: "TESTNET ONLY: no real assets, no real money. Solana devnet matches are settled on devnet by the settlement worker." }),
   );
 
   app.notFound((c) => c.json({ error: "not_found" }, 404));

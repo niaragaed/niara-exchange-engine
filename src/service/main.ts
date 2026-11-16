@@ -6,6 +6,9 @@ import { randomMatchId } from "../engine/random-id.ts";
 import { solanaCoverageChecker } from "../solana/coverage.ts";
 import { PROGRAM_ID } from "../solana/idl.ts";
 import { connectDevnet } from "../solana/rpc.ts";
+import { SolanaSettlementAdapter } from "../adapters/solana-adapter.ts";
+import { loadKeypairFile } from "../solana/keypair.ts";
+import { SettlementWorker } from "../worker/worker.ts";
 import { createApp } from "./http.ts";
 import { NotSingleInstanceError, OrderService, ServiceRoleError } from "./order-service.ts";
 
@@ -33,7 +36,7 @@ async function main(): Promise<void> {
     }
     throw e;
   }
-  log("starting", { notice: "TESTNET ONLY: no real assets, no real money; matches are not settled", ...describeConfig(config) });
+  log("starting", { notice: "TESTNET ONLY: no real assets, no real money; settlement on Solana devnet only", ...describeConfig(config) });
 
   let stopping = false;
   const die = (event: string, err: unknown): never => {
@@ -84,6 +87,30 @@ async function main(): Promise<void> {
     log("listening", { host: info.address, port: info.port }),
   );
 
+  // Settlement worker: in this process, so the advisory lock makes it the only one.
+  let worker: SettlementWorker | undefined;
+  if (config.workerEnabled && config.operatorKeypairPath) {
+    const operator = loadKeypairFile(config.operatorKeypairPath, "settlement operator");
+    const adapter = await SolanaSettlementAdapter.create({ rpc: solana, operator });
+    log("worker_starting", { chain: "solana-devnet", operator: operator.publicKey.toBase58() });
+    worker = new SettlementWorker({
+      db,
+      adapters: { "solana-devnet": adapter },
+      coverage,
+      markStale: (ids) => service.markStale(ids),
+      clock: () => Math.floor(Date.now() / 1000),
+      sleep: (ms) => new Promise((resolve) => setTimeout(resolve, ms)),
+      maxAttempts: config.workerMaxAttempts,
+      backoffBaseMs: 2_000,
+      backoffMaxMs: 60_000,
+      deadlineMarginSecs: config.settleDeadlineMarginSecs,
+      log,
+    });
+    worker.start(config.workerPollSecs * 1000);
+  } else {
+    log("worker_disabled", { notice: "matches stay pending: WORKER_ENABLED is off" });
+  }
+
   const timers = [
     setInterval(() => void service.sweepExpired(), config.expirySweepSecs * 1000),
     setInterval(() => void service.refreshMarkets(), config.marketRefreshSecs * 1000),
@@ -94,6 +121,7 @@ async function main(): Promise<void> {
     stopping = true;
     log("stopping", { signal });
     for (const t of timers) clearInterval(t);
+    worker?.stop();
     server.close(() => {
       // Closing the connection ends the session and releases the advisory lock.
       void db.close().finally(() => process.exit(0));

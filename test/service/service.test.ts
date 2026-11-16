@@ -375,6 +375,17 @@ describe("single instance", () => {
 });
 
 describe("public endpoints", () => {
+  it("reports a match's settlement status without wallets, and 404 for unknown ids", async () => {
+    await submit(alice, sol(alice, { side: "sell" }));
+    const r = await submit(bob, sol(bob, { side: "buy", quantity: SOL_LOT }));
+    const id = r.body.matches[0].id;
+    const status = await call(`/v1/matches/${id}`);
+    expect(status.body).toEqual({ matchId: id, status: "pending", settlement: null });
+    expect(JSON.stringify(status.body)).not.toContain(alice.wallet);
+    expect((await call(`/v1/matches/${randomUUID()}`)).status).toBe(404);
+    expect((await call("/v1/matches/not-a-uuid")).status).toBe(404);
+  });
+
   it("answers health with the testnet notice, and 404 for unknown chains, markets and routes", async () => {
     expect((await call("/health")).body).toMatchObject({ status: "ok", testnet: true });
     expect((await call(`/v1/books/sepolia/${SOL_ASSET}`)).status).toBe(404);

@@ -28,6 +28,14 @@ export interface ServiceConfig {
   solanaRpcUrl: string;
   /** On-chain delegate checks before matching and settling (spec §3.5). */
   delegateCheck: boolean;
+  /** The settlement worker runs in this process (it needs the operator keypair). */
+  workerEnabled: boolean;
+  /** Path of the settlement operator's keypair file, outside the repository (mode 600). */
+  operatorKeypairPath: string | null;
+  workerPollSecs: number;
+  workerMaxAttempts: number;
+  /** A settlement is sent only if it can land at least this long before expires_at. */
+  settleDeadlineMarginSecs: number;
 }
 
 export class ConfigError extends Error {
@@ -86,7 +94,9 @@ function checkNoPublicSecrets(env: Env, secrets: readonly string[]): void {
 export function loadConfig(env: Env = process.env): ServiceConfig {
   const databaseUrl = checkDatabaseUrl(env["DATABASE_URL"]);
   const password = decodeURIComponent(new URL(databaseUrl).password);
-  checkNoPublicSecrets(env, [databaseUrl, password, env["SUPABASE_SERVICE_ROLE_KEY"] ?? ""]);
+  // A private RPC URL can carry an API key; the public devnet RPC is not a secret.
+  const privateRpc = env["SOLANA_RPC_URL"] && env["SOLANA_RPC_URL"] !== "https://api.devnet.solana.com" ? env["SOLANA_RPC_URL"] : "";
+  checkNoPublicSecrets(env, [databaseUrl, password, env["SUPABASE_SERVICE_ROLE_KEY"] ?? "", privateRpc]);
   return {
     databaseUrl,
     host: env["HOST"] || "127.0.0.1",
@@ -98,6 +108,22 @@ export function loadConfig(env: Env = process.env): ServiceConfig {
     marketRefreshSecs: int(env, "MARKET_REFRESH_SECS", 60, 1, 86_400),
     solanaRpcUrl: rpcUrl(env["SOLANA_RPC_URL"]),
     delegateCheck: bool(env, "DELEGATE_CHECK", true),
+    ...workerConfig(env),
+  };
+}
+
+function workerConfig(env: Env) {
+  const workerEnabled = bool(env, "WORKER_ENABLED", true);
+  const operatorKeypairPath = env["SOLANA_OPERATOR_KEYPAIR"] || null;
+  if (workerEnabled && !operatorKeypairPath) {
+    throw new ConfigError("WORKER_ENABLED is on but SOLANA_OPERATOR_KEYPAIR is not set (or set WORKER_ENABLED=off)");
+  }
+  return {
+    workerEnabled,
+    operatorKeypairPath,
+    workerPollSecs: int(env, "WORKER_POLL_SECS", 5, 1, 3_600),
+    workerMaxAttempts: int(env, "WORKER_MAX_ATTEMPTS", 6, 1, 20),
+    settleDeadlineMarginSecs: int(env, "SETTLE_DEADLINE_MARGIN_SECS", 90, 30, 3_600),
   };
 }
 

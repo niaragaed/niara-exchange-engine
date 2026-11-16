@@ -23,6 +23,8 @@ export interface SettleOutcome {
 export interface SettlementAdapter {
   chain: ChainId;
   settle(match: Match): Promise<SettleOutcome>;
+  /** The transaction that settled `match` on-chain, or null if it is not settled. Sends nothing. */
+  findSettlement(match: Match): Promise<string | null>;
   isListed(asset: string): Promise<boolean>;
 }
 

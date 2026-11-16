@@ -89,6 +89,13 @@ export class SolanaSettlementAdapter implements SettlementAdapter {
     return listing.status === "Approved" && listing.assetClass === "Equity";
   }
 
+  async findSettlement(match: Match): Promise<string | null> {
+    if (!isUuidV4(match.id)) throw new SettlementFailure("precondition", `match id is not a UUID v4: ${match.id}`);
+    const record = this.pda.settlementRecord(uuidToBytes(match.id));
+    const [account] = await this.rpcCall(() => this.rpc.getAccounts([record]));
+    return account ? this.settleTransactionOf(record) : null;
+  }
+
   async settle(match: Match): Promise<SettleOutcome> {
     if (match.chain !== this.chain) throw new SettlementFailure("precondition", `match is on ${match.chain}, not solana-devnet`);
     if (!isUuidV4(match.id)) throw new SettlementFailure("precondition", `match id is not a UUID v4: ${match.id}`);
