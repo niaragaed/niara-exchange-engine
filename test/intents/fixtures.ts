@@ -1,6 +1,7 @@
 import { getPublicKeyAsync, signAsync, utils } from "@noble/ed25519";
 import { base58 } from "@scure/base";
 import { generatePrivateKey, privateKeyToAccount, type PrivateKeyAccount } from "viem/accounts";
+import { evmCancelTypedData, solanaCancelMessage, type CancelIntent } from "../../src/intents/cancel.ts";
 import { evmIntentTypedData } from "../../src/intents/evm.ts";
 import { solanaIntentMessage } from "../../src/intents/solana.ts";
 import type { OrderIntent } from "../../src/intents/types.ts";
@@ -28,6 +29,9 @@ export const EVM_USDT = "0x000000000000000000000000000000000000d001";
 export interface SolanaSigner {
   wallet: string;
   sign(intent: OrderIntent): Promise<string>;
+  signCancel(cancel: CancelIntent): Promise<string>;
+  /** Signs arbitrary bytes, as a wallet's signMessage would. */
+  signBytes(message: Uint8Array): Promise<string>;
 }
 
 export async function solanaSigner(): Promise<SolanaSigner> {
@@ -37,6 +41,8 @@ export async function solanaSigner(): Promise<SolanaSigner> {
     wallet,
     // What a wallet's signMessage returns, base58-encoded by the client.
     sign: async (intent) => base58.encode(await signAsync(solanaIntentMessage(intent), secret)),
+    signCancel: async (cancel) => base58.encode(await signAsync(solanaCancelMessage(cancel), secret)),
+    signBytes: async (message) => base58.encode(await signAsync(message, secret)),
   };
 }
 
@@ -44,6 +50,7 @@ export interface EvmSigner {
   wallet: string;
   account: PrivateKeyAccount;
   sign(intent: OrderIntent): Promise<string>;
+  signCancel(cancel: CancelIntent): Promise<string>;
 }
 
 export function evmSigner(): EvmSigner {
@@ -53,6 +60,7 @@ export function evmSigner(): EvmSigner {
     account,
     // What a wallet's eth_signTypedData_v4 returns.
     sign: (intent) => account.signTypedData(evmIntentTypedData(intent)),
+    signCancel: (cancel) => account.signTypedData(evmCancelTypedData(cancel)),
   };
 }
 
@@ -105,4 +113,9 @@ export function tamperedVariants(intent: OrderIntent, otherAddress: string): [st
     ["expiresAt", { ...intent, expiresAt: intent.expiresAt + 1 }],
     ["settlement", { ...intent, settlement: otherAddress }],
   ];
+}
+
+/** The cancellation of `intent`'s order, as its wallet would sign it. */
+export function cancelOf(intent: OrderIntent): CancelIntent {
+  return { version: 1, chain: intent.chain, settlement: intent.settlement, wallet: intent.wallet, nonce: intent.nonce };
 }

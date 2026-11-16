@@ -7,7 +7,8 @@ export const U64_MAX = (1n << 64n) - 1n;
 export const U256_MAX = (1n << 256n) - 1n;
 
 const DECIMAL = /^(0|[1-9][0-9]*)$/;
-const NONCE = /^[0-9a-f]{32}$/;
+/** 16 bytes as 32 lowercase hex chars (order intent and cancellation nonces). */
+export const NONCE_PATTERN = /^[0-9a-f]{32}$/;
 
 /** A canonical base58 Solana public key: decodes to 32 bytes and re-encodes identically. */
 export function isSolanaAddress(value: string): boolean {
@@ -18,7 +19,7 @@ export function isSolanaAddress(value: string): boolean {
   }
 }
 
-function checkAddress(kind: ChainKind, field: string, value: unknown): string {
+export function checkAddress(kind: ChainKind, field: string, value: unknown): string {
   if (typeof value !== "string") throw new IntentError("invalid_address", `${field} must be a string`);
   if (kind === "solana") {
     if (!isSolanaAddress(value)) throw new IntentError("invalid_address", `${field} is not a base58 public key`);
@@ -61,7 +62,7 @@ export function validateIntent(intent: OrderIntent): OrderIntent {
     throw new IntentError("amount_overflow", `amounts must fit in ${kind === "solana" ? "u64" : "uint256"}`);
   }
 
-  if (typeof intent.nonce !== "string" || !NONCE.test(intent.nonce) || /^0+$/.test(intent.nonce)) {
+  if (typeof intent.nonce !== "string" || !NONCE_PATTERN.test(intent.nonce) || /^0+$/.test(intent.nonce)) {
     throw new IntentError("invalid_nonce", "nonce must be 16 non-zero bytes as 32 lowercase hex chars");
   }
   // Required. i64 on Solana and uint64 on EVM both hold any safe integer.
