@@ -3,7 +3,7 @@
   "cluster": "devnet",
   "programId": "B311xH3PcEx86gdRbuinrGrh1r9G2qzjDCji8uc6eD9v",
   "quoteAsset": "8iWQ7VxYrkUv471vEoZ664eLwDzWinPiCJpRvcTUA24y",
-  "reviewed": false,
+  "reviewed": true,
   "lotSizes": {
     "8LjQkS1rTJGpzz9wbyAmqJk7oZgDsZS6vhPBv2BhzsTo": {
       "symbol": "tEQTY",
