@@ -7,6 +7,14 @@ import { solanaCoverageChecker } from "../solana/coverage.ts";
 import { PROGRAM_ID } from "../solana/idl.ts";
 import { connectDevnet } from "../solana/rpc.ts";
 import { SolanaSettlementAdapter } from "../adapters/solana-adapter.ts";
+import { EvmSettlementAdapter } from "../adapters/evm-adapter.ts";
+import type { SettlementAdapter } from "../adapters/settlement-adapter.ts";
+import type { ChainId } from "../chains.ts";
+import { connectEvm, httpTransport, rpcUrlFor, type EvmClient } from "../evm/client.ts";
+import { evmCoverageChecker } from "../evm/coverage.ts";
+import { loadKeystoreFile } from "../evm/keystore.ts";
+import { deployedChain, loadEvmSettings, type DeployedEvmChain } from "../evm/settings.ts";
+import type { CoverageChecker } from "../solana/coverage.ts";
 import { loadKeypairFile } from "../solana/keypair.ts";
 import { SettlementWorker } from "../worker/worker.ts";
 import { createApp } from "./http.ts";
@@ -36,7 +44,8 @@ async function main(): Promise<void> {
     }
     throw e;
   }
-  log("starting", { notice: "TESTNET ONLY: no real assets, no real money; settlement on Solana devnet only", ...describeConfig(config) });
+  const settledOn = ["solana-devnet", ...config.evmSettlementChains].join(", ");
+  log("starting", { notice: `TESTNET ONLY: no real assets, no real money; settlement on ${settledOn}`, ...describeConfig(config) });
 
   let stopping = false;
   const die = (event: string, err: unknown): never => {
@@ -49,8 +58,21 @@ async function main(): Promise<void> {
 
   // Solana devnet (genesis-checked): on-chain delegate checks (spec §3.5).
   const solana = await connectDevnet(config.solanaRpcUrl);
-  const coverage = config.delegateCheck ? { "solana-devnet": solanaCoverageChecker(solana, PROGRAM_ID) } : {};
-  if (!config.delegateCheck) log("delegate_check_disabled", { notice: "orders are matched without on-chain delegate checks" });
+  // EVM testnets (chain id checked; the config file must mark each one reviewed).
+  const evmSettings = loadEvmSettings();
+  const evm: { chain: DeployedEvmChain; client: EvmClient }[] = [];
+  for (const id of config.evmSettlementChains) {
+    const chain = deployedChain(evmSettings, id, { requireReviewed: true });
+    evm.push({ chain, client: await connectEvm(id, httpTransport(rpcUrlFor(id))) });
+  }
+
+  const coverage: Partial<Record<ChainId, CoverageChecker>> = {};
+  if (config.delegateCheck) {
+    coverage["solana-devnet"] = solanaCoverageChecker(solana, PROGRAM_ID);
+    for (const e of evm) coverage[e.chain.chain] = evmCoverageChecker(e.client, e.chain.contracts.settlement);
+  } else {
+    log("delegate_check_disabled", { notice: "orders are matched without on-chain delegate checks" });
+  }
 
   let service: OrderService;
   try {
@@ -93,11 +115,21 @@ async function main(): Promise<void> {
   let worker: SettlementWorker | undefined;
   if (config.workerEnabled && config.operatorKeypairPath) {
     const operator = loadKeypairFile(config.operatorKeypairPath, "settlement operator");
-    const adapter = await SolanaSettlementAdapter.create({ rpc: solana, operator });
+    const adapters: Partial<Record<ChainId, SettlementAdapter>> = {
+      "solana-devnet": await SolanaSettlementAdapter.create({ rpc: solana, operator }),
+    };
     log("worker_starting", { chain: "solana-devnet", operator: operator.publicKey.toBase58() });
+    if (evm.length > 0) {
+      // The EVM operator: decrypted once, in memory only; its key and password are never logged.
+      const evmOperator = loadKeystoreFile(config.evmOperatorKeystore!, config.evmOperatorKeystorePassword!, "EVM settlement operator");
+      for (const e of evm) {
+        adapters[e.chain.chain] = await EvmSettlementAdapter.create({ client: e.client, settings: e.chain, operator: evmOperator });
+        log("worker_starting", { chain: e.chain.chain, operator: evmOperator.address });
+      }
+    }
     worker = new SettlementWorker({
       db,
-      adapters: { "solana-devnet": adapter },
+      adapters,
       coverage,
       failMatch: (failed) => service.failMatch(failed),
       clock: () => Math.floor(Date.now() / 1000),

@@ -231,6 +231,29 @@ describe("settlement worker (fake adapter)", () => {
     ]);
   });
 
+  it("treats an EVM token refusal (ERC20InsufficientAllowance) like a delegation refusal: both legs re-checked", async () => {
+    const m = await seedMatch();
+    const adapter = fakeAdapter();
+    adapter.script = [
+      new SettlementFailure("program", "ERC20InsufficientAllowance(0xSETTLEMENT, 0, 10)", { name: "ERC20InsufficientAllowance" }),
+    ];
+    let checks = 0;
+    const coverage: CoverageChecker = {
+      check: async (needs) => needs.map((n) => (checks++ >= 2 && n.wallet === m.seller ? "allowance 0 < needed 10" : null)),
+    };
+    expect(await worker(adapter, { coverage: { "solana-devnet": coverage } }).runOnce()).toBe("failed");
+    expect(failures).toEqual([{ matchId: m.id, fault: "seller", reason: "ERC20InsufficientAllowance(0xSETTLEMENT, 0, 10)" }]);
+  });
+
+  it("gives fault none to any other contract refusal (no re-check)", async () => {
+    const other = await seedMatch();
+    const adapter = fakeAdapter();
+    adapter.script = [new SettlementFailure("program", "AssetNotEquity(0xTOKEN)", { name: "AssetNotEquity" })];
+    const covered: CoverageChecker = { check: async (needs) => needs.map(() => null) };
+    expect(await worker(adapter, { coverage: { "solana-devnet": covered } }).runOnce()).toBe("failed");
+    expect(failures).toEqual([{ matchId: other.id, fault: "none", reason: "AssetNotEquity(0xTOKEN)" }]);
+  });
+
   it("checks both delegations before settling: an uncovered order is marked stale and the match fails", async () => {
     const m = await seedMatch();
     const adapter = fakeAdapter();

@@ -6,7 +6,8 @@ import { nextMatchToSettle, setMatchStatus, writeSettlement, type MatchToSettle 
 import type { MatchFault } from "../engine/engine.ts";
 import type { Match } from "../engine/types.ts";
 import { matchNeeds, type CoverageChecker } from "../solana/coverage.ts";
-import { SettlementFailure } from "../solana/errors.ts";
+import { SettlementFailure } from "../adapters/failure.ts";
+import { EVM_COVERAGE_ERRORS } from "../evm/errors.ts";
 
 /**
  * Settlement worker. TESTNET ONLY.
@@ -19,8 +20,8 @@ import { SettlementFailure } from "../solana/errors.ts";
  *    it confirmed with that transaction and sends nothing;
  * 2. fails it if `expires_at` has passed, or is too close to land a transaction before
  *    it (spec §2: a match never settles after `expiresAt`);
- * 3. checks both legs' on-chain delegations (spec §3.5): if one does not cover the
- *    match, the match fails with that side at fault;
+ * 3. checks both legs' on-chain delegations (Solana) or allowances (EVM) and balances
+ *    (spec §3.5): if one does not cover the match, the match fails with that side at fault;
  * 4. sets `settling`, records the attempt, and calls the chain adapter;
  * 5. records the outcome: `settled` + `confirmed` with the tx hash (and the match's
  *    quantity settled on both orders), or a failure. Transient RPC errors are retried
@@ -158,13 +159,16 @@ export class SettlementWorker {
         lastError = e instanceof Error ? e.message : String(e);
         // Unknown exceptions are treated as transient: bounded retries, then a final check.
         if (failure && !failure.transient) {
-          // A refusal about delegation or funds: find the side at fault on-chain.
-          // DelegateNotSet (6025), InsufficientDelegation (6026), or a token transfer short of funds.
+          // A refusal about delegation, allowance or funds: find the side at fault on-chain.
+          // Solana: DelegateNotSet (6025), InsufficientDelegation (6026), or a token transfer
+          // short of funds. EVM: the token's ERC20InsufficientAllowance/Balance, or
+          // SafeERC20FailedOperation.
           const aboutCoverage =
             failure.code === 6025 ||
             failure.code === 6026 ||
             failure.errorName === "DelegateNotSet" ||
             failure.errorName === "InsufficientDelegation" ||
+            (failure.errorName !== undefined && EVM_COVERAGE_ERRORS.has(failure.errorName)) ||
             /insufficient funds/i.test(lastError);
           const uncovered = aboutCoverage ? await this.uncovered(match).catch(() => null) : null;
           return this.fail(match, attempts, lastError, uncovered?.fault ?? "none");

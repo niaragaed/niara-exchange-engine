@@ -6,8 +6,11 @@ Off-chain side of the Niara Exchange (design spec:
 `niara-exchange-solana/EXCHANGE-MULTICHAIN-DESIGN.md`, §2, §3.6, §5): wallets
 sign order intents, the order service admits them and the matching engine
 pairs `Equity` orders per (chain, asset), and the settlement worker settles
-each match on-chain through a `SettlementAdapter`. Only **Solana devnet** has
-an adapter; matches on the EVM testnets stay `pending`.
+each match on-chain through a `SettlementAdapter`: **Solana devnet**, and the
+EVM testnets **Base Sepolia, Robinhood Chain testnet and Tempo testnet**
+(HyperEVM testnet once deployed). An EVM chain settles only when it is listed
+in `EVM_SETTLEMENT_CHAINS` and marked reviewed in `config/evm-testnets.json`;
+otherwise its matches stay `pending`.
 
 Matching is off-chain and centralized by design; settlement is atomic and
 on-chain. This is not a decentralized exchange.
@@ -77,9 +80,11 @@ or contains a server secret. It connects to Postgres directly and writes as
 `service_role`; it does not use the Supabase service role key.
 
 The settlement worker runs in the same process (so the lock also makes it the
-only worker). It needs the settlement operator's keypair **path**
+only worker). It needs the Solana settlement operator's keypair **path**
 (`SOLANA_OPERATOR_KEYPAIR`, a file outside the repo, mode 600); without it set
-`WORKER_ENABLED=off` and matches stay `pending`.
+`WORKER_ENABLED=off` and matches stay `pending`. For the EVM chains of
+`EVM_SETTLEMENT_CHAINS` it also needs the EVM operator's Foundry keystore path
+(`EVM_OPERATOR_KEYSTORE`) and its password (`EVM_OPERATOR_KEYSTORE_PASSWORD`).
 
 Tests run on PGlite with the real migrations and a mocked Solana RPC; the
 `pg` adapter was checked read-only against the remote database.
@@ -108,3 +113,28 @@ Before matching and before settling, the service checks on-chain that each
 order's wallet delegates enough to the program's vault PDA and holds enough
 (sellers: the asset; buyers: USDT). An uncovered resting order is marked
 `stale`.
+
+## EVM testnets
+
+`NiaraSettlement.settle` on Base Sepolia (84532), Robinhood Chain testnet
+(46630) and Tempo testnet (42431), at the addresses of the niara-contracts v1
+deployments (`config/evm-testnets.json`, with each value's source; the three
+chains share addresses). HyperEVM testnet (998) has no deployment yet. Every
+EVM entry point checks the node's chain id; ABIs are vendored in
+`src/evm/abi`.
+
+- **Settlement.** The replay record (`settledMatches(bytes16)`) is read
+  before every send, and `settle` is simulated before every send; gas is the
+  node's estimate times the chain's multiplier (Base 1.3, Robinhood 2, Tempo
+  2 with the fee paid in pathUSD as a Tempo `0x76` transaction; HyperEVM
+  legacy pricing). `matchId` is the match UUID's 16 bytes.
+- **Allowance check** (the EVM delegate check): before matching and before
+  settling, each side must have approved NiaraSettlement for, and hold, its
+  leg (sellers the asset, buyers mockUSDT). An uncovered resting order is
+  marked `stale`.
+- **Operator key.** The `niara-evm-operator` Foundry keystore, read from the
+  Windows keystore directory niara-contracts uses
+  (`/mnt/c/Users/<you>/.foundry/keystores/niara-evm-operator` from WSL), with
+  its password from `.env`. Decrypted in memory; never printed.
+- **Before enabling a chain:** review its entry in `config/evm-testnets.json`
+  and set `"reviewed": true`, then add it to `EVM_SETTLEMENT_CHAINS`.

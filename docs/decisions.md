@@ -321,6 +321,92 @@ optional peer chain; `vite` and `@types/node` are pinned directly instead.
   `redactSecrets` (URL, user, host, password, a private RPC URL and its
   query values, the service key): driver errors can quote them.
 
+## EVM testnet settlement (`src/evm`, `src/adapters/evm-adapter.ts`)
+
+Base Sepolia, Robinhood Chain testnet and Tempo testnet; HyperEVM once
+deployed. Same shape as Solana: one adapter per chain behind
+`SettlementAdapter`, the same worker, the same fault rules.
+
+- **ABIs vendored, not hand-written.** `src/evm/abi/` holds the ABIs of
+  NiaraSettlement, ListingRegistry, CashbackDistributor and NativeAssetToken,
+  generated from `niara-contracts/out` (forge build of 2026-11-15, source
+  unchanged since, commit `ffbfa68`; that repo's working tree differs from it
+  only in line endings). viem 2.57.14 encodes, decodes and signs; no other
+  EVM package.
+- **Per-chain settings in `config/evm-testnets.json`** (public values only,
+  each with its source): contract addresses and the operator from the
+  niara-contracts README ("v1 deployments"; the three chains share
+  addresses because the deployer used nonces 0 to 10 on each), the first
+  block of each deployment (event scans start there), gas rules and the
+  reviewed lot sizes. A chain settles, and the sync writes, only when the
+  file marks it `"reviewed": true`; every address is checked on-chain before
+  use (NiaraSettlement's `feeToken`, `listingRegistry` and
+  `cashbackDistributor`, and the operator's `SETTLEMENT_OPERATOR_ROLE`).
+
+  | Chain | Pricing | Gas limit | Cap | Source |
+  |---|---|---|---|---|
+  | Base Sepolia | EIP-1559 | estimate × 1.30 | none | README "Network quirks": forge's default 130 |
+  | Robinhood testnet | EIP-1559 | estimate × 2.00 | none | README: 200 (L1 data component follows the L1 price) |
+  | Tempo testnet | Tempo `0x76`, fee in pathUSD `0x20c0…0000` | estimate × 2.00 | 30,000,000 | README "Tempo fees": the node's own estimate is already Tempo-priced for calls against current state (phase 2 needed 1.0×, ran at 200); 30M is the block's general gas limit |
+  | HyperEVM testnet | legacy (`gasPrice`) | estimate × 1.30 | 3,000,000 | not deployed; legacy per the founder (not recorded in niara-contracts); 3M is the small-block cap |
+
+  The Tempo demo carried explicit limits instead (`TEMPO_GAS_SETTLE` =
+  2,120,000) because forge could not estimate calls that depended on earlier
+  transactions of the same run; `settle` here is estimated against the
+  chain as it is.
+- **Chain id guard.** Every EVM entry point checks `eth_chainId` against
+  the chain it expects; mainnets are not listed anywhere.
+- **Adapter.** `settle(bytes16 matchId = the 16 bytes of the match UUID,
+  asset, mockUSDT, buyer, seller, quantity, paymentAmount)`. Per match:
+  (1) `settledMatches(matchId)` true: nothing is sent, the transaction that
+  emitted the match's `Settled` event is returned (`alreadySettled`); a
+  transaction this adapter already sent for the match and still pending is
+  waited for, never sent again; (2) **simulate** with `eth_call` from the
+  operator: a revert is never sent, and its custom error is decoded from
+  the settlement's or the token's ABI (`ERC20InsufficientAllowance(...)`);
+  `MatchAlreadySettled` means settled; (3) gas = estimate × multiplier,
+  refused above the cap; fees per the chain's pricing; the operator must
+  hold gas limit × max fee (on Tempo: its pathUSD balance, the cost
+  converted from attodollars); (4) sign locally, send once, await the
+  receipt (a timeout is transient and the transaction stays in flight). A
+  reverted receipt re-reads the replay guard. `EnforcedPause` and RPC
+  trouble are transient; a lost role is a setup error; the operator's
+  missing gas is `operator_funds`.
+- **Finding the settle transaction.** `Settled.matchId` is not indexed, so
+  the lookup filters by the indexed asset, payment token and buyer and
+  scans back from the latest block in chunks (halved when an RPC refuses
+  the range), down to the deployment block. Only used for matches already
+  settled on-chain (crash recovery, replays).
+- **Operator key.** The `niara-evm-operator` Foundry keystore (Web3 Secret
+  Storage v3, scrypt N = 8192 + AES-128-CTR), at the path niara-contracts
+  uses: `~/.foundry/keystores` on Windows, reached from WSL as
+  `/mnt/c/Users/<you>/.foundry/keystores/niara-evm-operator`
+  (`EVM_OPERATOR_KEYSTORE`); its password in
+  `EVM_OPERATOR_KEYSTORE_PASSWORD`. Decrypted once, in memory, with Node's
+  crypto (MAC checked first); the file must be outside the repository. Its
+  mode is not checked: the key is encrypted, and DrvFs shows every Windows
+  file as 0777. Neither the password nor the key is ever logged; every
+  `*PASSWORD*` variable is redacted from logs and refused in
+  `NEXT_PUBLIC_*`.
+- **Allowance check (the EVM equivalent of spec §3.5).** `settle` moves
+  both legs with `transferFrom`, so the spender is NiaraSettlement: a sell
+  order needs `allowance(wallet, NiaraSettlement)` and balance ≥ remaining
+  on the asset token; a buy order the same on mockUSDT for remaining / lot ×
+  limit price. Used exactly like the Solana delegate check (before matching
+  and before settling). A chain refusal named `ERC20InsufficientAllowance`,
+  `ERC20InsufficientBalance` or `SafeERC20FailedOperation` makes the worker
+  re-check both legs to find the side at fault, as `DelegateNotSet` does on
+  Solana.
+- **Service.** `EVM_SETTLEMENT_CHAINS` lists the EVM chains the worker
+  settles on (and checks allowances on); each must be deployed and reviewed
+  in the config file, and the operator keystore and its password are then
+  required. Empty by default: EVM matches stay `pending`.
+- **Nonces.** One worker, one transaction at a time, nonce from the
+  `pending` count. The in-flight record is in memory: after a restart, a
+  transaction still pending is not known, so a second send (next nonce) is
+  possible; it can only revert `MatchAlreadySettled` once the first lands
+  (gas lost, never a second settlement).
+
 ## Failed matches after both orders were filled (migration `20261120120000`)
 
 A match fills both orders when it is made; settlement comes later and can fail
@@ -369,7 +455,11 @@ innocent side's quantity was lost: `filled_quantity` cannot decrease.
 
 ## Not done yet
 
-- EVM settlement adapters: matches on the EVM testnets stay `pending`.
+- HyperEVM testnet: no v1 deployment yet; its settings are in the config
+  file (legacy gas, 3M small-block cap) but the adapter refuses it.
+- EVM: no replacement or speed-up of a stuck transaction (same nonce, higher
+  fee); a settlement left pending past its receipt timeout is retried by the
+  worker and waited for, but never repriced.
 - A `none` failure leaves both orders stale; nothing re-offers them
   automatically (an operator or the wallets decide).
 - A stale order never returns to the book (spec §5 allows
@@ -464,3 +554,14 @@ These go to `niara-exchange-solana`, which owns the spec.
     `confirmed` (tx hash), `failed` (error); matches `settling` while an
     attempt is in flight.
 
+12. **§3.4 / §2, EVM `matchId` width.** `NiaraSettlement.settle` takes
+    `bytes16 matchId` (the match UUID's 16 bytes, as on Solana), not
+    `bytes32`; record that the EVM replay key is `settledMatches[bytes16]`.
+13. **§3.5, EVM.** The delegate check's EVM form: `allowance(wallet,
+    NiaraSettlement)` and balance on each leg's token (asset for the seller,
+    USDT for the buyer); NiaraSettlement is the spender, there is no vault.
+14. **Contract (next version), `Settled.matchId` indexed.** It is not
+    indexed today, so finding the transaction of a settled match means
+    scanning `Settled` logs by asset, payment token and buyer. Indexing
+    `matchId` would make it one exact `eth_getLogs` query. A change to
+    niara-contracts, not to this repo.

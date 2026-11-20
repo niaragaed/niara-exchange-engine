@@ -1,0 +1,152 @@
+{
+  "note": "TESTNET ONLY. Per-chain settings of the EVM testnets, read by the EVM settlement adapter (src/adapters/evm-adapter.ts) and scripts/sync-evm-listings.ts. Public addresses only, no secrets, no RPC URLs. Addresses, deployment blocks and gas figures come from niara-contracts (README 'v1 deployments' and 'Network quirks', and broadcast/Demo.s.sol/<chain id>/run-latest.json) at commit ffbfa68. Nothing settles and the sync writes nothing on a chain until its 'reviewed' is true.",
+  "chains": {
+    "base-sepolia": {
+      "evmChainId": 84532,
+      "deployed": true,
+      "reviewed": false,
+      "contracts": {
+        "listingRegistry": "0x883081A2f4D1860aa92f03Cb3FE0f0aDcEc0C58f",
+        "settlement": "0x14C6F9DeD6C97F67149B4305c57331F9d3820B6F",
+        "cashbackDistributor": "0x4b10fF1a44Aca4118F75b1f326cC2EE46b73ADD4"
+      },
+      "quoteAsset": "0x4ED579b02B53d050624c0F04Fb1F4D9b1d347457",
+      "operator": "0x59ff48062E4BfAb0F0DD94377b0C6f8203f078f3",
+      "fromBlock": "59342255",
+      "gas": {
+        "pricing": "eip1559",
+        "multiplierPct": 130,
+        "maxGasPerTx": null,
+        "feeToken": null,
+        "why": "forge's default --gas-estimate-multiplier (130) is what Base Sepolia needed (README 'Network quirks'); the demo settle used 204,428 gas in a type-2 transaction."
+      },
+      "explorer": "https://sepolia.basescan.org",
+      "lotSizes": {
+        "0x0f1c771c8943cD7EC2b4c654CEea49B41336bDD7": {
+          "symbol": "tEQTY",
+          "lotSize": "1000000000000000000",
+          "why": "Niara Demo Equity (TEST), 18 decimals: one share per lot; prices are mockUSDT base units per share."
+        },
+        "0x4b6999CF049b05e23202e85bdF936edeBe77B5b2": {
+          "symbol": "tBOND",
+          "lotSize": "1000000000000000000",
+          "why": "Niara Demo Bond 2030 (TEST), FixedIncome (P2P escrow class): mirrored for the public listing view; the order book refuses it."
+        },
+        "0x4ED579b02B53d050624c0F04Fb1F4D9b1d347457": {
+          "symbol": "mockUSDT",
+          "lotSize": "1",
+          "why": "Currency, the quote asset (NiaraSettlement.feeToken): mirrored for the public listing view; never an order book asset."
+        },
+        "0x262422490d3829556aFFAC970B9B2B7D093d500B": {
+          "symbol": "mockBRL",
+          "lotSize": "1",
+          "why": "Currency (P2P escrow class): mirrored for the public listing view; never an order book asset."
+        }
+      }
+    },
+    "robinhood-testnet": {
+      "evmChainId": 46630,
+      "deployed": true,
+      "reviewed": false,
+      "contracts": {
+        "listingRegistry": "0x883081A2f4D1860aa92f03Cb3FE0f0aDcEc0C58f",
+        "settlement": "0x14C6F9DeD6C97F67149B4305c57331F9d3820B6F",
+        "cashbackDistributor": "0x4b10fF1a44Aca4118F75b1f326cC2EE46b73ADD4"
+      },
+      "quoteAsset": "0x4ED579b02B53d050624c0F04Fb1F4D9b1d347457",
+      "operator": "0x59ff48062E4BfAb0F0DD94377b0C6f8203f078f3",
+      "fromBlock": "153889845",
+      "gas": {
+        "pricing": "eip1559",
+        "multiplierPct": 200,
+        "maxGasPerTx": null,
+        "feeToken": null,
+        "why": "--gas-estimate-multiplier 200 on Robinhood (README 'Network quirks': an L1 data component follows the L1 price; only gas used is charged)."
+      },
+      "explorer": "https://explorer.testnet.chain.robinhood.com",
+      "lotSizes": {
+        "0x0f1c771c8943cD7EC2b4c654CEea49B41336bDD7": {
+          "symbol": "tEQTY",
+          "lotSize": "1000000000000000000",
+          "why": "Niara Demo Equity (TEST), 18 decimals: one share per lot."
+        },
+        "0x4b6999CF049b05e23202e85bdF936edeBe77B5b2": {
+          "symbol": "tBOND",
+          "lotSize": "1000000000000000000",
+          "why": "FixedIncome (P2P escrow class): mirrored for the public listing view; the order book refuses it."
+        },
+        "0x4ED579b02B53d050624c0F04Fb1F4D9b1d347457": {
+          "symbol": "mockUSDT",
+          "lotSize": "1",
+          "why": "Currency, the quote asset: never an order book asset."
+        },
+        "0x262422490d3829556aFFAC970B9B2B7D093d500B": {
+          "symbol": "mockBRL",
+          "lotSize": "1",
+          "why": "Currency (P2P escrow class): never an order book asset."
+        }
+      }
+    },
+    "tempo-testnet": {
+      "evmChainId": 42431,
+      "deployed": true,
+      "reviewed": false,
+      "contracts": {
+        "listingRegistry": "0x883081A2f4D1860aa92f03Cb3FE0f0aDcEc0C58f",
+        "settlement": "0x14C6F9DeD6C97F67149B4305c57331F9d3820B6F",
+        "cashbackDistributor": "0x4b10fF1a44Aca4118F75b1f326cC2EE46b73ADD4"
+      },
+      "quoteAsset": "0x4ED579b02B53d050624c0F04Fb1F4D9b1d347457",
+      "operator": "0x59ff48062E4BfAb0F0DD94377b0C6f8203f078f3",
+      "fromBlock": "44456008",
+      "gas": {
+        "pricing": "tempo",
+        "multiplierPct": 200,
+        "maxGasPerTx": "30000000",
+        "feeToken": "0x20c0000000000000000000000000000000000000",
+        "why": "No native gas token: fees in pathUSD (6 decimals, gas priced in attodollars), Tempo transaction type 0x76 with feeToken. settle is estimated by the node against current state, so it is already Tempo-priced; 200 is the multiplier the README sets for such calls (phase 2 needed 1.0x). 30,000,000 is the block's general gas limit. The demo settle used 913,528 gas."
+      },
+      "explorer": "https://explore.testnet.tempo.xyz",
+      "lotSizes": {
+        "0x0f1c771c8943cD7EC2b4c654CEea49B41336bDD7": {
+          "symbol": "tEQTY",
+          "lotSize": "1000000000000000000",
+          "why": "Niara Demo Equity (TEST), 18 decimals: one share per lot."
+        },
+        "0x4b6999CF049b05e23202e85bdF936edeBe77B5b2": {
+          "symbol": "tBOND",
+          "lotSize": "1000000000000000000",
+          "why": "FixedIncome (P2P escrow class): mirrored for the public listing view; the order book refuses it."
+        },
+        "0x4ED579b02B53d050624c0F04Fb1F4D9b1d347457": {
+          "symbol": "mockUSDT",
+          "lotSize": "1",
+          "why": "Currency, the quote asset: never an order book asset."
+        },
+        "0x262422490d3829556aFFAC970B9B2B7D093d500B": {
+          "symbol": "mockBRL",
+          "lotSize": "1",
+          "why": "Currency (P2P escrow class): never an order book asset."
+        }
+      }
+    },
+    "hyperevm-testnet": {
+      "evmChainId": 998,
+      "deployed": false,
+      "reviewed": false,
+      "contracts": null,
+      "quoteAsset": null,
+      "operator": null,
+      "fromBlock": null,
+      "gas": {
+        "pricing": "legacy",
+        "multiplierPct": 130,
+        "maxGasPerTx": "3000000",
+        "feeToken": null,
+        "why": "Not deployed (niara-contracts README: 'HyperEVM has no v1 deployment'). Legacy gas pricing per the founder's instruction of 2026-11-20 (not recorded in niara-contracts); 3,000,000 is the per-transaction cap of small blocks (README 'HyperEVM big blocks'), which the operator stays on."
+      },
+      "explorer": null,
+      "lotSizes": {}
+    }
+  }
+}

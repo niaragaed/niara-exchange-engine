@@ -26,6 +26,9 @@ describe("loadConfig", () => {
       workerPollSecs: 5,
       workerMaxAttempts: 6,
       settleDeadlineMarginSecs: 90,
+      evmSettlementChains: [],
+      evmOperatorKeystore: null,
+      evmOperatorKeystorePassword: null,
     });
     expect(() => loadConfig({ DATABASE_URL: URL_OK })).toThrow(/SOLANA_OPERATOR_KEYPAIR/);
     expect(loadConfig({ DATABASE_URL: URL_OK, SOLANA_OPERATOR_KEYPAIR: "/outside/operator.json" })).toMatchObject({
@@ -97,6 +100,41 @@ describe("loadConfig", () => {
     expect(redactSecrets("nothing secret here", env)).toBe("nothing secret here");
   });
 
+  it("reads the EVM settlement chains, and requires the operator keystore and its password with them", () => {
+    const base = { ...NO_WORKER, DATABASE_URL: URL_OK };
+    expect(loadConfig({ ...base, EVM_SETTLEMENT_CHAINS: "base-sepolia, tempo-testnet,base-sepolia" }).evmSettlementChains).toEqual([
+      "base-sepolia",
+      "tempo-testnet",
+    ]);
+    expect(() => loadConfig({ ...base, EVM_SETTLEMENT_CHAINS: "ethereum" })).toThrow(/unknown EVM chain ethereum/);
+    expect(() => loadConfig({ ...base, EVM_SETTLEMENT_CHAINS: "solana-devnet" })).toThrow(/unknown EVM chain/);
+    const worker = { DATABASE_URL: URL_OK, SOLANA_OPERATOR_KEYPAIR: "/outside/op.json", EVM_SETTLEMENT_CHAINS: "base-sepolia" };
+    expect(() => loadConfig(worker)).toThrow(/EVM_OPERATOR_KEYSTORE/);
+    expect(() => loadConfig({ ...worker, EVM_OPERATOR_KEYSTORE: "/outside/ks" })).toThrow(/EVM_OPERATOR_KEYSTORE_PASSWORD/);
+    const c = loadConfig({ ...worker, EVM_OPERATOR_KEYSTORE: "/outside/ks", EVM_OPERATOR_KEYSTORE_PASSWORD: "test-keystore-pw" });
+    expect(c).toMatchObject({ evmSettlementChains: ["base-sepolia"], evmOperatorKeystore: "/outside/ks" });
+    expect(JSON.stringify(describeConfig(c))).not.toContain("test-keystore-pw");
+    expect(() => loadConfig({ ...base, BASE_SEPOLIA_RPC_URL: "ftp://x" })).toThrow(/BASE_SEPOLIA_RPC_URL/);
+  });
+
+  it("refuses keystore passwords and private EVM RPCs in NEXT_PUBLIC_*, and redacts them from logs", () => {
+    const env = {
+      ...NO_WORKER,
+      DATABASE_URL: URL_OK,
+      EVM_OPERATOR_KEYSTORE_PASSWORD: "test-keystore-pw",
+      EVM_INVESTOR_A_KEYSTORE_PASSWORD: "test-investor-pw",
+      TEMPO_TESTNET_RPC_URL: "https://tempo.example.invalid/v1/test-key-xyz",
+      BASE_SEPOLIA_RPC_URL: "https://sepolia.base.org",
+    };
+    expect(() => loadConfig({ ...env, NEXT_PUBLIC_X: "a test-keystore-pw b" })).toThrow(/server secret/);
+    expect(() => loadConfig({ ...env, NEXT_PUBLIC_RPC: "https://tempo.example.invalid/v1/test-key-xyz" })).toThrow(/server secret/);
+    expect(() => loadConfig({ ...env, NEXT_PUBLIC_EVM_KEYSTORE: "x" })).toThrow(/NEXT_PUBLIC_EVM_KEYSTORE/);
+    expect(() => loadConfig({ ...env, NEXT_PUBLIC_BASE_RPC: "https://sepolia.base.org" })).not.toThrow();
+    const out = redactSecrets("pw test-keystore-pw, test-investor-pw; GET https://tempo.example.invalid/v1/test-key-xyz", env);
+    for (const part of ["test-keystore-pw", "test-investor-pw", "test-key-xyz", "tempo.example.invalid"]) expect(out).not.toContain(part);
+    expect(redactSecrets("https://sepolia.base.org is public", env)).toBe("https://sepolia.base.org is public");
+  });
+
   it(".env.example parses, holds placeholders only, and documents every variable", () => {
     const text = readFileSync(join(import.meta.dirname, "../.env.example"), "utf8");
     const env: Record<string, string> = {};
@@ -117,6 +155,8 @@ describe("loadConfig", () => {
         "SETTLEMENT_MARGIN_SECS",
         "SETTLE_DEADLINE_MARGIN_SECS",
         "SOLANA_OPERATOR_KEYPAIR",
+        "EVM_SETTLEMENT_CHAINS",
+        "EVM_OPERATOR_KEYSTORE",
         "WORKER_ENABLED",
         "WORKER_MAX_ATTEMPTS",
         "WORKER_POLL_SECS",

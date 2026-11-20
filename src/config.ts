@@ -1,3 +1,5 @@
+import { EVM_CHAIN_IDS, isEvmChainId, type EvmChainId } from "./evm/settings.ts";
+
 /**
  * Order service configuration: environment variables only (no config file, no
  * defaults for secrets). See `.env.example`. TESTNET ONLY.
@@ -36,6 +38,12 @@ export interface ServiceConfig {
   workerMaxAttempts: number;
   /** A settlement is sent only if it can land at least this long before expires_at. */
   settleDeadlineMarginSecs: number;
+  /** EVM testnets the worker settles on (and checks allowances on); empty = none. */
+  evmSettlementChains: EvmChainId[];
+  /** Path of the EVM operator's encrypted Foundry keystore, outside the repository. */
+  evmOperatorKeystore: string | null;
+  /** Its password. Secret. */
+  evmOperatorKeystorePassword: string | null;
 }
 
 export class ConfigError extends Error {
@@ -47,7 +55,28 @@ export class ConfigError extends Error {
 
 type Env = Readonly<Record<string, string | undefined>>;
 
-const SECRET_NAME = /SERVICE_ROLE|SECRET|PASSWORD|PRIVATE|DATABASE_URL|OPERATOR|KEYPAIR|JWT/i;
+const SECRET_NAME = /SERVICE_ROLE|SECRET|PASSWORD|PRIVATE|DATABASE_URL|OPERATOR|KEYPAIR|KEYSTORE|JWT/i;
+
+/** EVM RPC variables (same names as niara-contracts' .env); a private URL may carry an API key. */
+const EVM_RPC_VARS = ["BASE_SEPOLIA_RPC_URL", "ROBINHOOD_TESTNET_RPC_URL", "TEMPO_TESTNET_RPC_URL", "HYPEREVM_TESTNET_RPC_URL"] as const;
+const PUBLIC_RPCS = new Set([
+  "https://api.devnet.solana.com",
+  "https://sepolia.base.org",
+  "https://rpc.testnet.chain.robinhood.com",
+  "https://rpc.moderato.tempo.xyz",
+  "https://rpc.hyperliquid-testnet.xyz/evm",
+]);
+
+/** Every variable whose value is a password (the EVM operator's and the e2e wallets' keystores). */
+function passwordValues(env: Env): string[] {
+  return Object.entries(env)
+    .filter(([name, v]) => /PASSWORD/i.test(name) && !name.startsWith("NEXT_PUBLIC_") && v)
+    .map(([, v]) => v!);
+}
+
+function privateRpcValues(env: Env): string[] {
+  return ["SOLANA_RPC_URL", ...EVM_RPC_VARS].map((n) => env[n] ?? "").filter((v) => v && !PUBLIC_RPCS.has(v));
+}
 
 function int(env: Env, name: string, fallback: number, min: number, max: number): number {
   const raw = env[name];
@@ -94,9 +123,8 @@ function checkNoPublicSecrets(env: Env, secrets: readonly string[]): void {
 export function loadConfig(env: Env = process.env): ServiceConfig {
   const databaseUrl = checkDatabaseUrl(env["DATABASE_URL"]);
   const password = decodeURIComponent(new URL(databaseUrl).password);
-  // A private RPC URL can carry an API key; the public devnet RPC is not a secret.
-  const privateRpc = env["SOLANA_RPC_URL"] && env["SOLANA_RPC_URL"] !== "https://api.devnet.solana.com" ? env["SOLANA_RPC_URL"] : "";
-  checkNoPublicSecrets(env, [databaseUrl, password, env["SUPABASE_SERVICE_ROLE_KEY"] ?? "", privateRpc]);
+  // A private RPC URL can carry an API key; the public RPCs are not secrets.
+  checkNoPublicSecrets(env, [databaseUrl, password, env["SUPABASE_SERVICE_ROLE_KEY"] ?? "", ...privateRpcValues(env), ...passwordValues(env)]);
   return {
     databaseUrl,
     host: env["HOST"] || "127.0.0.1",
@@ -109,6 +137,29 @@ export function loadConfig(env: Env = process.env): ServiceConfig {
     solanaRpcUrl: rpcUrl(env["SOLANA_RPC_URL"]),
     delegateCheck: bool(env, "DELEGATE_CHECK", true),
     ...workerConfig(env),
+    ...evmConfig(env),
+  };
+}
+
+function evmConfig(env: Env) {
+  const raw = (env["EVM_SETTLEMENT_CHAINS"] ?? "").trim();
+  const chains = raw === "" ? [] : raw.split(",").map((c) => c.trim());
+  for (const c of chains) {
+    if (!isEvmChainId(c)) throw new ConfigError(`EVM_SETTLEMENT_CHAINS: unknown EVM chain ${c} (one of ${EVM_CHAIN_IDS.join(", ")})`);
+  }
+  const keystore = env["EVM_OPERATOR_KEYSTORE"] || null;
+  const password = env["EVM_OPERATOR_KEYSTORE_PASSWORD"] || null;
+  if (chains.length > 0 && bool(env, "WORKER_ENABLED", true) && (!keystore || !password)) {
+    throw new ConfigError("EVM_SETTLEMENT_CHAINS is set but EVM_OPERATOR_KEYSTORE or EVM_OPERATOR_KEYSTORE_PASSWORD is not");
+  }
+  for (const name of EVM_RPC_VARS) {
+    const v = env[name];
+    if (v && !/^https?:\/\//.test(v)) throw new ConfigError(`${name} must be an http(s) URL`);
+  }
+  return {
+    evmSettlementChains: [...new Set(chains)] as EvmChainId[],
+    evmOperatorKeystore: keystore,
+    evmOperatorKeystorePassword: password,
   };
 }
 
@@ -152,9 +203,11 @@ function bool(env: Env, name: string, fallback: boolean): boolean {
  * database, password) and no RPC URL, which may hold an API key.
  */
 export function describeConfig(c: ServiceConfig): Record<string, string | number | boolean | null> {
-  const { databaseUrl: _db, solanaRpcUrl, ...rest } = c;
+  const { databaseUrl: _db, solanaRpcUrl, evmOperatorKeystorePassword: pw, evmSettlementChains, ...rest } = c;
   return {
     ...rest,
+    evmSettlementChains: evmSettlementChains.join(",") || "(none)",
+    evmOperatorKeystorePassword: pw ? "(set, not shown)" : null,
     databaseUrl: "(set, not shown)",
     solanaRpcUrl: solanaRpcUrl === "https://api.devnet.solana.com" ? solanaRpcUrl : "(custom, not shown)",
   };
@@ -162,14 +215,14 @@ export function describeConfig(c: ServiceConfig): Record<string, string | number
 
 /**
  * Removes every secret-bearing value from a text before it is logged: the database
- * URL and each of its parts, the Solana RPC URL and its path/query (API keys), and the
- * Supabase service role key. Error messages from drivers can quote any of them.
+ * URL and each of its parts, private Solana and EVM RPC URLs and their path/query (API
+ * keys), every *PASSWORD* variable (keystore passwords), and the Supabase service role key. Error messages from drivers can quote any of them.
  */
 export function redactSecrets(text: string, env: Readonly<Record<string, string | undefined>> = process.env): string {
   const secrets: string[] = [];
-  for (const name of ["DATABASE_URL", "SOLANA_RPC_URL"]) {
+  for (const name of ["DATABASE_URL", "SOLANA_RPC_URL", ...EVM_RPC_VARS]) {
     const raw = env[name];
-    if (!raw) continue;
+    if (!raw || PUBLIC_RPCS.has(raw)) continue;
     secrets.push(raw);
     try {
       const u = new URL(raw);
@@ -189,6 +242,7 @@ export function redactSecrets(text: string, env: Readonly<Record<string, string 
     }
   }
   if (env["SUPABASE_SERVICE_ROLE_KEY"]) secrets.push(env["SUPABASE_SERVICE_ROLE_KEY"]);
+  secrets.push(...passwordValues(env));
   let out = text;
   for (const s of secrets.filter((x) => x.length >= 3).sort((a, b) => b.length - a.length)) out = out.split(s).join("***");
   return out;
