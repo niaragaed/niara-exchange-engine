@@ -89,7 +89,29 @@ order.
 - **Off-chain only.** The service takes the order out of the book. Until
   `settle` verifies intents on-chain (spec §3.6), the on-chain guarantee that
   a cancelled order never settles is the wallet revoking its delegate or
-  allowance.
+  allowance. An on-chain `cancel_intent` belongs to the on-chain
+  signed-intents milestone, not to this one.
+- **Recorded** (migration `20261120130000_cancel_reasons`): every path that
+  takes an order out of the book writes `orders.cancel_reason`, in the same
+  transaction as the new status:
+
+  | Reason | Status | Written by |
+  |---|---|---|
+  | `by_wallet` | cancelled | `POST /v1/orders/cancel`; `cancel_signature` holds the wallet's signature exactly as sent |
+  | `self_trade_prevention` | cancelled | the engine, newest order of a wallet that would trade with itself |
+  | `below_min_notional` | cancelled | the engine, remainder or next match below the minimum |
+  | `expired` | expired | the expiry sweep, matching, or a failed match |
+  | `stale` | stale | the delegate check, or a failed match (`match_reversals`) |
+
+  The reason follows the status (table check); the signature is present
+  exactly for `by_wallet`. The signed message is not stored: it is rebuilt
+  from the order (chain, wallet, nonce), the chain's settlement
+  program/contract and the intent version, as for the order intent. Once
+  written, the signature never changes and the reason changes only from
+  `stale` (a stale order can still be cancelled by its wallet, and becomes
+  `by_wallet`). The service derives the reason from the engine's events
+  (`closingOf` in `src/service/persist.ts`); the engine is unchanged. Neither
+  column is readable by `anon`/`authenticated`.
 
 ## Matching engine (`src/engine`)
 
@@ -121,7 +143,8 @@ order.
   (matching then continues with the next one; this happens to an order left
   below a raised minimum) or the incoming order (matching stops; a buyer whose
   remainder is worth less than the minimum at the best ask). The engine never
-  skips the best price to reach a larger match.
+  skips the best price to reach a larger match. **Final** (confirmed by the
+  founder on 2026-11-20).
 - **Restart**: `restore` rebuilds the books from the non-terminal orders in
   their original `seq`, with their fills, on a fresh engine; `exportState`
   returns everything that decides future behavior (markets, each book's
@@ -358,8 +381,10 @@ innocent side's quantity was lost: `filled_quantity` cannot decrease.
 - The match ids made before a restart are not reloaded into the engine's
   duplicate check; a repeated UUID v4 would hit the primary key, fail the
   transaction and restart the service.
-- No column records why an order was cancelled or the cancellation's
-  signature.
+- On-chain cancellation (`cancel_intent` on Solana, a `cancelled` mapping on
+  EVM) waits for the on-chain signed-intents milestone; until then a
+  cancellation is enforced off-chain, and recorded in `orders.cancel_reason`
+  and `orders.cancel_signature`.
 - Advisory lock contention between two processes is not tested against a
   real server (PGlite is one session). The `pg` adapter and `set local role
   service_role` were checked read-only against the remote database.
@@ -407,11 +432,13 @@ These go to `niara-exchange-solana`, which owns the spec.
    whose remainder limits the match is cancelled (the resting one, and
    matching continues; or the incoming one, and matching stops); the engine
    never skips the best price to reach a larger match. This covers resting
-   orders left below a raised minimum.
-5. **§5, cancellation audit trail.** Add `orders.cancel_reason`
-   (`by_wallet`, `self_trade_prevention`, `below_min_notional`) and
-   `orders.cancel_signature` (the wallet's signed cancellation), in a later
-   migration, so the audit trail shows who cancelled and why.
+   orders left below a raised minimum. The founder confirmed this rule as
+   final on 2026-11-20.
+5. **§5, cancellation audit trail.** Record `orders.cancel_reason`
+   (`by_wallet`, `self_trade_prevention`, `below_min_notional`, `expired`,
+   `stale`, tied to the status) and `orders.cancel_signature` (the wallet's
+   signature, present exactly for `by_wallet`), as in migration
+   `20261120130000_cancel_reasons`.
 6. **§2 `SettlementAdapter`.** `settle` returns `{ txHash, alreadySettled }`
    (`alreadySettled`: the replay guard already existed, nothing was sent,
    `txHash` is the transaction that created it), and the interface gains

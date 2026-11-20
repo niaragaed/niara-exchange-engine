@@ -321,7 +321,7 @@ describe("a match that fails after both orders were filled (real OrderService)",
     ]);
     // filled_quantity never decreased; the buy is open again, the sell is stale.
     expect(await loadOrder(t.db, m.buyOrderId)).toMatchObject({ status: "open", filledQuantity: 10n, releasedQuantity: 10n, voidedQuantity: 0n });
-    expect(await loadOrder(t.db, m.sellOrderId)).toMatchObject({ status: "stale", filledQuantity: 10n, releasedQuantity: 0n, voidedQuantity: 10n });
+    expect(await loadOrder(t.db, m.sellOrderId)).toMatchObject({ status: "stale", filledQuantity: 10n, releasedQuantity: 0n, voidedQuantity: 10n, cancelReason: "stale" });
     expect((await service.book("solana-devnet", w.asset.toBase58())).body).toMatchObject({
       bids: [{ price: "25000000", quantity: "10", orders: 1 }],
       asks: [],
@@ -381,7 +381,7 @@ describe("a match that fails after both orders were filled (real OrderService)",
     await t.pglite.query("alter table public.orders enable trigger orders_guard_update");
     const { service } = await serviceAndWorker({ check: async (needs) => needs.map(() => null) });
     expect((await service.failMatch({ match: m, fault: "expired", reason: "TEST: too close to expires_at", attempts: 0 })).status).toBe(200);
-    expect((await loadOrder(t.db, m.sellOrderId))?.status).toBe("expired");
+    expect(await loadOrder(t.db, m.sellOrderId)).toMatchObject({ status: "expired", cancelReason: "expired" });
     expect(await loadOrder(t.db, m.buyOrderId)).toMatchObject({ status: "open", releasedQuantity: 10n });
   });
 });

@@ -77,7 +77,7 @@ async function failSellerDefault(tx: Queryable, m: { buy: string; sell: string; 
     [m.match, m.buy, m.sell],
   );
   await tx.query("update public.orders set released_quantity = 1000, status = 'open' where id = $1", [m.buy]);
-  await tx.query("update public.orders set voided_quantity = 1000, status = 'stale' where id = $1", [m.sell]);
+  await tx.query("update public.orders set voided_quantity = 1000, status = 'stale', cancel_reason = 'stale' where id = $1", [m.sell]);
 }
 
 beforeAll(async () => {

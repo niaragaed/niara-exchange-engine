@@ -54,7 +54,12 @@ function dbSink(engine: () => MatchingEngine, catalog: () => Catalog): Sink {
           intentSignature: "TEST-SIGNATURE",
         }),
       ),
-    changed: (events) => asServiceRole(t.db, (tx) => persistEvents(tx, engine(), events)),
+    changed: (events) => {
+      // Wallet cancellations carry the wallet's signature (labeled test value here).
+      const signatures = new Map<string, string>();
+      for (const e of events) if (e.type === "order_cancelled" && e.reason === "by_wallet") signatures.set(e.orderId, "TEST-CANCEL-SIGNATURE");
+      return asServiceRole(t.db, (tx) => persistEvents(tx, engine(), events, new Set(), signatures));
+    },
   };
 }
 

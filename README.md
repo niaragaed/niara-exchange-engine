@@ -30,7 +30,8 @@ Supabase project `niara-exchange-dev` (Postgres 17). Migrations live in
 |---|---|
 | `20261116120000_exchange_schema` | **Applied** (by the founder, through the Supabase dashboard tooling) |
 | `20261116130000_fk_indexes` | **Applied** (by the founder; `matches_chain_asset_idx` seen on the remote on 2026-11-16) |
-| `20261120120000_match_reversals` | **Not applied.** Failed matches after both orders were filled: settled/released/voided counters and the `match_reversals` audit table. The order service refuses to start until it is applied |
+| `20261120120000_match_reversals` | **Applied** (by the founder; seen in `supabase_migrations.schema_migrations` on 2026-11-20). Failed matches after both orders were filled: settled/released/voided counters and the `match_reversals` audit table |
+| `20261120130000_cancel_reasons` | **Not applied.** `orders.cancel_reason` and `orders.cancel_signature`, written on every cancellation, expiry and stale. The order service refuses to start until it is applied |
 
 - The obsolete September prototype was moved to the schema
   `legacy_prototype_2026_09`, outside the API. This repo only uses `public`.

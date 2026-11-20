@@ -1,5 +1,5 @@
 import type { ChainId } from "../chains.ts";
-import type { OrderStatus } from "../engine/engine.ts";
+import type { CancelReason, OrderStatus } from "../engine/engine.ts";
 import type { AssetClass, ListingStatus, Match, Side } from "../engine/types.ts";
 import type { Database, Queryable } from "./database.ts";
 
@@ -131,12 +131,28 @@ export interface OrderRow {
   releasedQuantity?: bigint;
   voidedQuantity?: bigint;
   status: OrderStatus;
+  /** Migration 20261120130000: why the order left the book; the wallet's signature if it cancelled. */
+  cancelReason?: StoredCancelReason | null;
+  cancelSignature?: string | null;
+}
+
+/**
+ * `orders.cancel_reason`: the engine's cancel reasons, plus expiry and stale. Required for
+ * the statuses cancelled, expired and stale, absent otherwise (`orders_cancel_reason_check`).
+ */
+export type StoredCancelReason = CancelReason | "expired" | "stale";
+
+/** Why an order left the book, as written with its new status. */
+export interface OrderClosing {
+  reason: StoredCancelReason;
+  /** The wallet's cancellation signature: required for `by_wallet`, refused otherwise. */
+  signature?: string;
 }
 
 const ORDER_COLUMNS = `id::text, seq::text, chain_id, asset, side::text, quantity::text, lot_size::text,
   limit_price::text, payment_asset, wallet, nonce, extract(epoch from expires_at)::bigint::text as expires_at,
   intent_version, intent_signature, filled_quantity::text, settled_quantity::text, released_quantity::text,
-  voided_quantity::text, status::text`;
+  voided_quantity::text, status::text, cancel_reason::text, cancel_signature`;
 
 interface RawOrder {
   id: string;
@@ -158,6 +174,8 @@ interface RawOrder {
   released_quantity: string;
   voided_quantity: string;
   status: OrderStatus;
+  cancel_reason: StoredCancelReason | null;
+  cancel_signature: string | null;
 }
 
 function toOrderRow(o: RawOrder): OrderRow {
@@ -181,6 +199,8 @@ function toOrderRow(o: RawOrder): OrderRow {
     releasedQuantity: BigInt(o.released_quantity),
     voidedQuantity: BigInt(o.voided_quantity),
     status: o.status,
+    cancelReason: o.cancel_reason,
+    cancelSignature: o.cancel_signature,
   };
 }
 
@@ -248,9 +268,9 @@ export async function insertOrder(tx: Queryable, o: OrderRow): Promise<void> {
   await tx.query(
     `insert into public.orders
        (id, seq, chain_id, asset, side, quantity, lot_size, limit_price, payment_asset, wallet, nonce,
-        expires_at, intent_version, intent_signature, filled_quantity, status)
+        expires_at, intent_version, intent_signature, filled_quantity, status, cancel_reason, cancel_signature)
      overriding system value
-     values ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, to_timestamp($12), $13, $14, $15, $16)`,
+     values ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, to_timestamp($12), $13, $14, $15, $16, $17, $18)`,
     [
       o.id,
       o.seq,
@@ -268,6 +288,8 @@ export async function insertOrder(tx: Queryable, o: OrderRow): Promise<void> {
       o.intentSignature,
       o.filledQuantity.toString(),
       o.status,
+      o.cancelReason ?? null,
+      o.cancelSignature ?? null,
     ],
   );
 }
@@ -276,6 +298,9 @@ export async function insertOrder(tx: Queryable, o: OrderRow): Promise<void> {
  * Writes the engine's state of an order. A released or voided quantity lower than the
  * stored one is refused by the guard trigger (never silently kept), and any change of
  * them must come with its reversal rows (checked at commit).
+ *
+ * `closing` is written when the order leaves the book (cancelled, expired, stale); without
+ * it the stored reason is kept, and a status that needs one is refused by the table check.
  */
 export async function updateOrderState(
   tx: Queryable,
@@ -283,13 +308,24 @@ export async function updateOrderState(
   filledQuantity: bigint,
   status: OrderStatus,
   counters: { releasedQuantity: bigint; voidedQuantity: bigint } = { releasedQuantity: 0n, voidedQuantity: 0n },
+  closing?: OrderClosing,
 ): Promise<void> {
   const r = await tx.query<{ id: string }>(
     `update public.orders
         set filled_quantity = $2, status = $3,
-            released_quantity = $4, voided_quantity = $5
+            released_quantity = $4, voided_quantity = $5,
+            cancel_reason = coalesce($6::public.cancel_reason, cancel_reason),
+            cancel_signature = coalesce($7, cancel_signature)
       where id = $1 returning id::text`,
-    [id, filledQuantity.toString(), status, counters.releasedQuantity.toString(), counters.voidedQuantity.toString()],
+    [
+      id,
+      filledQuantity.toString(),
+      status,
+      counters.releasedQuantity.toString(),
+      counters.voidedQuantity.toString(),
+      closing?.reason ?? null,
+      closing?.signature ?? null,
+    ],
   );
   if (r.rows.length !== 1) throw new Error(`order ${id} not found`);
 }
@@ -312,10 +348,18 @@ export async function insertReversal(
   );
 }
 
-/** True when migration 20261120120000_match_reversals is applied. */
-export async function hasMatchReversals(tx: Queryable): Promise<boolean> {
-  const r = await tx.query<{ ok: boolean }>(`select to_regclass('public.match_reversals') is not null as ok`);
-  return r.rows[0]?.ok === true;
+/** Migrations the service writes through, each with what shows it is applied. */
+export const REQUIRED_MIGRATIONS = ["20261120120000_match_reversals", "20261120130000_cancel_reasons"] as const;
+
+/** The required migrations that are not applied yet (empty when the schema is ready). */
+export async function missingMigrations(tx: Queryable): Promise<string[]> {
+  const r = await tx.query<{ match_reversals: boolean; cancel_reasons: boolean }>(
+    `select to_regclass('public.match_reversals') is not null as match_reversals,
+            exists (select 1 from information_schema.columns
+                     where table_schema = 'public' and table_name = 'orders' and column_name = 'cancel_reason') as cancel_reasons`,
+  );
+  const row = r.rows[0];
+  return REQUIRED_MIGRATIONS.filter((m) => row?.[m.slice(15) as "match_reversals" | "cancel_reasons"] !== true);
 }
 
 // ---------------------------------------------------------------------------

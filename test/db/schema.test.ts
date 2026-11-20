@@ -205,7 +205,7 @@ describe("orders", () => {
     await expect(db.query("update public.orders set filled_quantity = 200 where id = $1", [id])).rejects.toThrow(
       /cannot decrease/,
     );
-    await db.query("update public.orders set status = 'cancelled' where id = $1", [id]);
+    await db.query("update public.orders set status = 'cancelled', cancel_reason = 'below_min_notional' where id = $1", [id]);
     await expect(db.query("update public.orders set status = 'open' where id = $1", [id])).rejects.toThrow(/terminal/);
   });
 });
@@ -360,7 +360,7 @@ describe("row level security", () => {
         await insertOrder({ wallet: ALICE, side: "buy", price: 10, quantity: 300 });
         await insertOrder({ wallet: BOB, side: "buy", price: 10, quantity: 200 });
         const cancelled = await insertOrder({ wallet: BOB, side: "sell", price: 12 });
-        await db.query("update public.orders set status = 'cancelled' where id = $1", [cancelled]);
+        await db.query("update public.orders set status = 'cancelled', cancel_reason = 'self_trade_prevention' where id = $1", [cancelled]);
         await asRole(role, async () => {
           const book = await db.query<{ side: string; price: string; quantity: string; orders: number }>(
             "select side, price::text, quantity::text, orders::int from public.order_book",

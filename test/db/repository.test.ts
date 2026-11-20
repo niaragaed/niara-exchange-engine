@@ -19,6 +19,7 @@ import {
   releaseInstanceLock,
   updateOrderState,
   type OrderRow,
+  type StoredCancelReason,
 } from "../../src/db/repository.ts";
 import type { Match } from "../../src/engine/types.ts";
 import { resetData, startPglite, type TestDb } from "./pglite.ts";
@@ -57,7 +58,16 @@ function row(overrides: Partial<OrderRow> & Pick<OrderRow, "seq" | "wallet" | "s
     voidedQuantity: 0n,
     status: "open",
     ...overrides,
+    // The reason the status needs (migration 20261120130000), unless the test sets one.
+    cancelReason: overrides.cancelReason ?? defaultReason(overrides.status ?? "open"),
+    cancelSignature: overrides.cancelSignature ?? null,
   };
+}
+
+function defaultReason(status: OrderRow["status"]): StoredCancelReason | null {
+  if (status === "cancelled") return "below_min_notional";
+  if (status === "expired" || status === "stale") return status;
+  return null;
 }
 
 function matchOf(buy: OrderRow, sell: OrderRow, sequence: number, quantity: bigint, price: bigint): Match {

@@ -6,7 +6,7 @@ import {
   checkServiceRole,
   countOpenOrders,
   findOrderByNonce,
-  hasMatchReversals,
+  missingMigrations,
   loadChains,
   loadListings,
 } from "../db/repository.ts";
@@ -69,9 +69,11 @@ export class NotSingleInstanceError extends Error {
 }
 
 export class SchemaNotReadyError extends Error {
-  constructor() {
-    super("migration 20261120120000_match_reversals is not applied: refusing to start");
+  readonly missing: readonly string[];
+  constructor(missing: readonly string[]) {
+    super(`migration${missing.length > 1 ? "s" : ""} ${missing.join(", ")} not applied: refusing to start`);
     this.name = "SchemaNotReadyError";
+    this.missing = missing;
   }
 }
 
@@ -177,7 +179,8 @@ export class OrderService {
    */
   static async start(deps: OrderServiceDeps): Promise<OrderService> {
     if (!(await checkServiceRole(deps.db))) throw new ServiceRoleError();
-    if (!(await hasMatchReversals(deps.db))) throw new SchemaNotReadyError();
+    const missing = await missingMigrations(deps.db);
+    if (missing.length > 0) throw new SchemaNotReadyError(missing);
     if (!(await acquireInstanceLock(deps.db))) throw new NotSingleInstanceError();
     const { engine, catalog } = await rebuildEngine(deps.db, {
       newMatchId: deps.newMatchId,
@@ -367,7 +370,7 @@ export class OrderService {
         }
         return error(403, result.reason);
       }
-      await persistEvents(tx, this.engine, result.events);
+      await persistEvents(tx, this.engine, result.events, new Set(), new Map([[found.id, fields.signature]]));
       return { status: 200, body: { order: orderJson(result.order, "by_wallet") } };
     });
   }

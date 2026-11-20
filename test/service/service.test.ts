@@ -209,8 +209,22 @@ describe("minimum notional (spec §9.12 item 1)", () => {
       .order;
     const r = await submit(bob, sol(bob, { side: "buy", quantity: 2n * SOL_LOT, limitPrice: 5_000_000n }));
     expect(r.body.matches.map((m: { paymentAmount: string }) => m.paymentAmount)).toEqual(["10000000"]);
-    expect(await loadOrder(t.db, maker.id)).toMatchObject({ status: "cancelled", filledQuantity: 2n * SOL_LOT });
+    expect(await loadOrder(t.db, maker.id)).toMatchObject({
+      status: "cancelled",
+      filledQuantity: 2n * SOL_LOT,
+      cancelReason: "below_min_notional",
+      cancelSignature: null,
+    });
     expect((await call(`/v1/books/solana-devnet/${SOL_ASSET}`)).body.asks).toEqual([]);
+  });
+
+  it("cancels a new order that would trade with its own wallet, recording self-trade prevention", async () => {
+    const resting = (await submit(alice, sol(alice, { side: "sell" }))).body.order;
+    const r = await submit(alice, sol(alice, { side: "buy", limitPrice: 30_000_000n }));
+    expect(r.status).toBe(201);
+    expect(r.body.order).toMatchObject({ status: "cancelled", cancelReason: "self_trade_prevention" });
+    expect(await loadOrder(t.db, r.body.order.id)).toMatchObject({ status: "cancelled", cancelReason: "self_trade_prevention", cancelSignature: null });
+    expect(await loadOrder(t.db, resting.id)).toMatchObject({ status: "open", cancelReason: null });
   });
 });
 
@@ -259,7 +273,9 @@ describe("cancel an order", () => {
     const r = await call("/v1/orders/cancel", { cancel, signature: await alice.signCancel(cancel) });
     expect(r.status).toBe(200);
     expect(r.body.order).toMatchObject({ id: order.id, status: "cancelled", cancelReason: "by_wallet" });
-    expect((await loadOrder(t.db, order.id))?.status).toBe("cancelled");
+    const signature = await alice.signCancel(cancel);
+    // The stored signature is exactly the one the wallet sent (ed25519 is deterministic).
+    expect(await loadOrder(t.db, order.id)).toMatchObject({ status: "cancelled", cancelReason: "by_wallet", cancelSignature: signature });
     expect((await call(`/v1/books/solana-devnet/${SOL_ASSET}`)).body.asks).toEqual([]);
     const again = await call("/v1/orders/cancel", { cancel, signature: await alice.signCancel(cancel) });
     expect([again.status, again.body.error]).toEqual([409, "not_live"]);
@@ -296,7 +312,7 @@ describe("expiry", () => {
     offset = 70; // 50 s left: inside the 60 s settlement margin.
     expect((await call(`/v1/books/solana-devnet/${SOL_ASSET}`)).body.asks).toEqual([]);
     expect((await service.sweepExpired()).body).toEqual({ expired: 1 });
-    expect((await loadOrder(t.db, order.id))?.status).toBe("expired");
+    expect(await loadOrder(t.db, order.id)).toMatchObject({ status: "expired", cancelReason: "expired", cancelSignature: null });
   });
 });
 
@@ -350,7 +366,7 @@ describe("single instance", () => {
     query: async <T>(sql: string) => {
       if (sql.includes("pg_try_advisory_lock")) return { rows: [{ locked: answers.locked }] as T[] };
       if (sql.includes("pg_has_role")) return { rows: [{ ok: answers.member }] as T[] };
-      if (sql.includes("match_reversals")) return { rows: [{ ok: true }] as T[] };
+      if (sql.includes("match_reversals")) return { rows: [{ match_reversals: true, cancel_reasons: true }] as T[] };
       throw new Error(`unexpected query: ${sql}`);
     },
     transaction: async () => {
@@ -427,12 +443,14 @@ describe("on-chain delegate check (spec §3.5), with a fake checker", () => {
     expect(r.status).toBe(201);
     expect(r.body.matches).toEqual([]);
     expect(r.body.order.status).toBe("open");
-    expect(await loadOrder(t.db, maker.id)).toMatchObject({ status: "stale" });
+    expect(await loadOrder(t.db, maker.id)).toMatchObject({ status: "stale", cancelReason: "stale", cancelSignature: null });
     expect((await call(`/v1/books/solana-devnet/${SOL_ASSET}`)).body.asks).toEqual([]);
-    // The stale order can still be cancelled by its wallet.
+    // The stale order can still be cancelled by its wallet: the reason becomes by_wallet.
     const intent = (await loadOrder(t.db, maker.id))!;
     const cancel = cancelOf(sol(alice, { nonce: intent.nonce }));
-    expect((await call("/v1/orders/cancel", { cancel, signature: await alice.signCancel(cancel) })).status).toBe(200);
+    const signature = await alice.signCancel(cancel);
+    expect((await call("/v1/orders/cancel", { cancel, signature })).status).toBe(200);
+    expect(await loadOrder(t.db, maker.id)).toMatchObject({ status: "cancelled", cancelReason: "by_wallet", cancelSignature: signature });
   });
 
   it("matches the covered orders behind an uncovered one", async () => {
@@ -451,6 +469,6 @@ describe("on-chain delegate check (spec §3.5), with a fake checker", () => {
     expect([r.status, r.body.error]).toEqual([503, "chain_unavailable"]);
     expect((await loadOrder(t.db, maker.id))?.status).toBe("open");
     expect((await service.markStale([maker.id])).body).toEqual({ stale: 1 });
-    expect((await loadOrder(t.db, maker.id))?.status).toBe("stale");
+    expect(await loadOrder(t.db, maker.id)).toMatchObject({ status: "stale", cancelReason: "stale" });
   });
 });
