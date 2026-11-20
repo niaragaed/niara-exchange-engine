@@ -146,3 +146,22 @@ EVM entry point checks the node's chain id; ABIs are vendored in
 node --env-file=.env scripts/sync-evm-listings.ts --chain base-sepolia
 node --env-file=.env scripts/sync-evm-listings.ts --chain base-sepolia --apply
 ```
+
+### End-to-end on Base Sepolia (`scripts/e2e-evm.ts`, not run yet)
+
+The same shape as the Solana run, with the demo investors of the niara-contracts
+Base Sepolia demo: investor B (holds tEQTY) sells 10 tEQTY to investor A (holds
+mockUSDT) at 25 mockUSDT; expected fee 1.25 (50 bps, rounded up), cashback 0.25
+(20% of the fee), seller receives 248.75. Writes to Base Sepolia: two approvals
+(one per wallet, each paying its own gas) and the worker's `settle`.
+
+Before running it: apply migration `20261120130000_cancel_reasons`; mark
+`base-sepolia` reviewed in `config/evm-testnets.json`; apply the listing sync for
+it; set `EVM_SETTLEMENT_CHAINS=base-sepolia`, `EVM_OPERATOR_KEYSTORE`,
+`EVM_OPERATOR_KEYSTORE_PASSWORD` and the two investors' keystore passwords in
+`.env`; start the service.
+
+```bash
+node --env-file=.env scripts/e2e-evm.ts --dry-run   # every read-only check, nothing sent
+node --env-file=.env scripts/e2e-evm.ts             # log in ~/niara-logs/
+```
