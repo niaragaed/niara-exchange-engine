@@ -52,9 +52,30 @@ export type CancelReason = "by_wallet" | "self_trade_prevention" | "below_min_no
 export interface OrderView extends OrderInput {
   /** Arrival position in the engine, from 1: the time in price-time priority. */
   seq: number;
+  /** Total ever matched; never decreases. */
   filledQuantity: bigint;
+  /** Of failed matches, returned to this order (it was not at fault). */
+  releasedQuantity: bigint;
+  /** Of failed matches, lost by this order (it defaulted). */
+  voidedQuantity: bigint;
+  /** quantity - (filled - released - voided). */
   remaining: bigint;
   status: OrderStatus;
+}
+
+/**
+ * Why a match failed after both orders were filled (`reverse`):
+ * - seller / buyer: that side's delegation or balance no longer covered it
+ * - both: both sides'
+ * - expired: it could not settle before its expires_at
+ * - none: the chain refused it for another reason, or retries ran out
+ */
+export type MatchFault = "seller" | "buyer" | "both" | "expired" | "none";
+
+export interface Reversal {
+  orderId: string;
+  kind: "released" | "voided";
+  quantity: bigint;
 }
 
 export type EngineEvent =
@@ -65,7 +86,8 @@ export type EngineEvent =
   | { type: "order_rested"; orderId: string; remaining: bigint }
   | { type: "order_cancelled"; orderId: string; reason: CancelReason; remaining: bigint }
   | { type: "order_expired"; orderId: string; remaining: bigint }
-  | { type: "order_stale"; orderId: string; remaining: bigint };
+  | { type: "order_stale"; orderId: string; remaining: bigint }
+  | { type: "order_reversed"; orderId: string; kind: Reversal["kind"]; quantity: bigint; matchId: string };
 
 export type PlaceResult =
   | { accepted: false; reason: RejectReason; events: EngineEvent[] }
@@ -90,12 +112,17 @@ export interface BookSnapshot {
   asks: PriceLevel[];
 }
 
-/** A non-terminal order as persisted, to rebuild the books after a restart. */
+/**
+ * An order as persisted, to rebuild the books after a restart: every non-terminal one,
+ * and the `filled` ones with quantity still in flight (a failed match may return it).
+ */
 export interface RestoredOrder extends OrderInput {
   /** Its original arrival position (`orders.seq`). */
   seq: number;
   filledQuantity: bigint;
-  status: "open" | "partially_filled" | "stale";
+  releasedQuantity?: bigint;
+  voidedQuantity?: bigint;
+  status: "open" | "partially_filled" | "stale" | "filled";
 }
 
 export interface RestoreInput {
@@ -137,6 +164,8 @@ interface OrderState {
   input: OrderInput;
   seq: number;
   filled: bigint;
+  released: bigint;
+  voided: bigint;
   status: OrderStatus;
 }
 
@@ -153,8 +182,13 @@ export function marketKey(chain: ChainId, asset: string): string {
   return `${chain}\u0000${asset}`;
 }
 
+/** Matched and still standing: total matched minus what failed matches gave back or voided. */
+function netOf(o: OrderState): bigint {
+  return o.filled - o.released - o.voided;
+}
+
 function remainingOf(o: OrderState): bigint {
-  return o.input.quantity - o.filled;
+  return o.input.quantity - netOf(o);
 }
 
 /** True when `a` has priority over `b` on the same side of the book. */
@@ -236,16 +270,32 @@ export class MatchingEngine {
     if (reason) {
       return { accepted: false, reason, events: [{ type: "order_rejected", orderId: input.id, reason }] };
     }
-    const key = marketKey(input.chain, input.asset);
-    const book = this.books.get(key)!;
-    const taker: OrderState = { input: { ...input }, seq: this.nextSeq++, filled: 0n, status: "open" };
+    const taker: OrderState = {
+      input: { ...input },
+      seq: this.nextSeq++,
+      filled: 0n,
+      released: 0n,
+      voided: 0n,
+      status: "open",
+    };
     this.orders.set(input.id, taker);
 
     const events: EngineEvent[] = [{ type: "order_accepted", orderId: input.id }];
     const matches: Match[] = [];
-    const opposite = input.side === "buy" ? book.asks : book.bids;
+    this.matchAndRest(taker, now, events, matches);
+    return { accepted: true, order: view(taker), matches, events };
+  }
 
+  /**
+   * Matches `taker` against the opposite side (price-time priority, maker's price,
+   * self-trade prevention, minimum notional), then rests its remainder at its own seq,
+   * or cancels it if below the minimum. Used for new orders and for released ones.
+   */
+  private matchAndRest(taker: OrderState, now: number, events: EngineEvent[], matches: Match[]): void {
+    const key = marketKey(taker.input.chain, taker.input.asset);
+    const book = this.books.get(key)!;
     const market = this.markets.get(key)!;
+    const opposite = taker.input.side === "buy" ? book.asks : book.bids;
     while (remainingOf(taker) > 0n) {
       const maker = opposite[0];
       if (!maker) break;
@@ -302,12 +352,69 @@ export class MatchingEngine {
       } else if (this.belowMin(taker, market)) {
         this.cancelBelowMin(taker, events);
       } else {
-        taker.status = taker.filled > 0n ? "partially_filled" : "open";
-        insertSorted(input.side, input.side === "buy" ? book.bids : book.asks, taker);
+        taker.status = netOf(taker) > 0n ? "partially_filled" : "open";
+        insertSorted(taker.input.side, taker.input.side === "buy" ? book.bids : book.asks, taker);
         events.push({ type: "order_rested", orderId: taker.input.id, remaining: remainingOf(taker) });
       }
     }
-    return { accepted: true, order: view(taker), matches, events };
+  }
+
+  /**
+   * A match failed after both orders were filled. Each order gives back the match's
+   * quantity: `voided` for a side at fault, `released` otherwise; nothing decreases
+   * (`filled` stays, the quantity goes to `released` or `voided`).
+   *
+   * - a defaulting side becomes stale (out of the book; its wallet can cancel it);
+   * - an innocent side re-enters the market with its original priority (seq), through
+   *   the matching loop, so the book never crosses; if it is no longer live it expires;
+   *   if it was cancelled, expired or stale, the release is accounting only;
+   * - `expired`: both are released; an order whose expiry is at or before the match's
+   *   expires, the other re-enters;
+   * - `none` (refused for another reason, or retries ran out): both are released and
+   *   become stale rather than re-enter, since they would match each other again.
+   */
+  reverse(
+    m: Pick<Match, "id" | "buyOrderId" | "sellOrderId" | "quantity" | "expiresAt">,
+    fault: MatchFault,
+    now: number,
+  ): { reversals: Reversal[]; events: EngineEvent[]; matches: Match[] } {
+    assertTime(now);
+    const buy = this.orders.get(m.buyOrderId);
+    const sell = this.orders.get(m.sellOrderId);
+    if (!buy || !sell) throw new EngineInvariantError(`reverse ${m.id}: the engine does not hold both orders`);
+    for (const o of [buy, sell]) {
+      if (netOf(o) < m.quantity) throw new EngineInvariantError(`reverse ${m.id}: ${o.input.id} has less matched than the match`);
+    }
+    const events: EngineEvent[] = [];
+    const matches: Match[] = [];
+    const reversals: Reversal[] = [];
+    const atFault = (o: OrderState) =>
+      fault === "both" || (fault === "seller" && o === sell) || (fault === "buyer" && o === buy);
+    const terminalOrStale = (o: OrderState) => o.status === "cancelled" || o.status === "expired" || o.status === "stale";
+    const rebook: OrderState[] = [];
+
+    for (const o of [buy, sell]) {
+      const kind: Reversal["kind"] = atFault(o) ? "voided" : "released";
+      if (kind === "voided") o.voided += m.quantity;
+      else o.released += m.quantity;
+      reversals.push({ orderId: o.input.id, kind, quantity: m.quantity });
+      events.push({ type: "order_reversed", orderId: o.input.id, kind, quantity: m.quantity, matchId: m.id });
+      if (terminalOrStale(o)) continue; // accounting only
+      this.removeFromBook(o);
+      if (kind === "voided" || fault === "none") {
+        o.status = "stale";
+        events.push({ type: "order_stale", orderId: o.input.id, remaining: remainingOf(o) });
+      } else if ((fault === "expired" && o.input.expiresAt <= m.expiresAt) || !this.live(o, now)) {
+        o.status = "expired";
+        events.push({ type: "order_expired", orderId: o.input.id, remaining: remainingOf(o) });
+      } else {
+        o.status = netOf(o) > 0n ? "partially_filled" : "open";
+        rebook.push(o);
+      }
+    }
+    // Re-enter in priority order (seq): the earlier order first.
+    for (const o of rebook.sort((a, b) => a.seq - b.seq)) this.matchAndRest(o, now, events, matches);
+    return { reversals, events, matches };
   }
 
   /** Cancels a live or stale order of `wallet` (the caller authenticated the wallet). */
@@ -386,12 +493,19 @@ export class MatchingEngine {
       if (!market) throw fail("unknown market");
       if (r.lotSize !== market.lotSize) throw fail("lot size differs from the market's");
       if (r.quantity <= 0n || r.quantity % r.lotSize !== 0n || r.limitPrice <= 0n) throw fail("invalid amounts");
-      if (r.filledQuantity < 0n || r.filledQuantity >= r.quantity || r.filledQuantity % r.lotSize !== 0n) {
-        throw fail("filled quantity must be whole lots below the quantity");
+      const released = r.releasedQuantity ?? 0n;
+      const voided = r.voidedQuantity ?? 0n;
+      const net = r.filledQuantity - released - voided;
+      for (const v of [r.filledQuantity, released, voided]) {
+        if (v < 0n || v % r.lotSize !== 0n) throw fail("quantities must be non-negative whole lots");
       }
-      if ((r.status === "open") !== (r.filledQuantity === 0n) && r.status !== "stale") {
-        throw fail("status does not match the filled quantity");
-      }
+      if (net < 0n || net > r.quantity) throw fail("net matched quantity out of range");
+      const consistent =
+        r.status === "stale" ||
+        (r.status === "open" && net === 0n) ||
+        (r.status === "partially_filled" && net > 0n && net < r.quantity) ||
+        (r.status === "filled" && net === r.quantity);
+      if (!consistent) throw fail("status does not match the net matched quantity");
       const order: OrderInput = {
         id: r.id,
         chain: r.chain,
@@ -404,11 +518,11 @@ export class MatchingEngine {
         lotSize: r.lotSize,
         expiresAt: r.expiresAt,
       };
-      restored.push({ input: order, seq: r.seq, filled: r.filledQuantity, status: r.status });
+      restored.push({ input: order, seq: r.seq, filled: r.filledQuantity, released, voided, status: r.status });
     }
     for (const o of restored) {
       this.orders.set(o.input.id, o);
-      if (o.status !== "stale") {
+      if (o.status === "open" || o.status === "partially_filled") {
         const book = this.books.get(marketKey(o.input.chain, o.input.asset))!;
         insertSorted(o.input.side, o.input.side === "buy" ? book.bids : book.asks, o);
       }
@@ -552,7 +666,15 @@ export class MatchingEngine {
 }
 
 function view(o: OrderState): OrderView {
-  return { ...o.input, seq: o.seq, filledQuantity: o.filled, remaining: remainingOf(o), status: o.status };
+  return {
+    ...o.input,
+    seq: o.seq,
+    filledQuantity: o.filled,
+    releasedQuantity: o.released,
+    voidedQuantity: o.voided,
+    remaining: remainingOf(o),
+    status: o.status,
+  };
 }
 
 /** USDT base units of `quantity` at `price` per lot. */

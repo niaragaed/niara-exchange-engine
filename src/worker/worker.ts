@@ -1,8 +1,9 @@
 import type { SettlementAdapter } from "../adapters/settlement-adapter.ts";
 import type { ChainId } from "../chains.ts";
 import type { Database } from "../db/database.ts";
-import { asServiceRole } from "../db/repository.ts";
+import { addSettledQuantity, asServiceRole } from "../db/repository.ts";
 import { nextMatchToSettle, setMatchStatus, writeSettlement, type MatchToSettle } from "../db/settlements.ts";
+import type { MatchFault } from "../engine/engine.ts";
 import type { Match } from "../engine/types.ts";
 import { matchNeeds, type CoverageChecker } from "../solana/coverage.ts";
 import { SettlementFailure } from "../solana/errors.ts";
@@ -18,12 +19,18 @@ import { SettlementFailure } from "../solana/errors.ts";
  *    it confirmed with that transaction and sends nothing;
  * 2. fails it if `expires_at` has passed, or is too close to land a transaction before
  *    it (spec §2: a match never settles after `expiresAt`);
- * 3. checks both legs' on-chain delegations (spec §3.5): an uncovered order is marked
- *    stale and the match fails;
+ * 3. checks both legs' on-chain delegations (spec §3.5): if one does not cover the
+ *    match, the match fails with that side at fault;
  * 4. sets `settling`, records the attempt, and calls the chain adapter;
- * 5. records the outcome: `settled` + `confirmed` with the tx hash, or `failed` with a
- *    readable error. Transient RPC errors are retried with an exponential, bounded
- *    backoff (`maxAttempts`), each retry starting again at step 1.
+ * 5. records the outcome: `settled` + `confirmed` with the tx hash (and the match's
+ *    quantity settled on both orders), or a failure. Transient RPC errors are retried
+ *    with an exponential, bounded backoff (`maxAttempts`), each retry starting again
+ *    at step 1.
+ *
+ * A failure goes to `failMatch` (OrderService.failMatch) with a fault: `expired`; the
+ * side(s) whose delegation or balance does not cover the match (`seller`, `buyer`,
+ * `both`; for a chain refusal about delegation or funds, both legs are re-checked to
+ * find which); otherwise `none`. The innocent side's quantity returns to the book.
  *
  * Never twice: one worker (advisory lock), the record check before every send, the
  * adapter's own check, the program's `init` of `["settled", match_id]`, and the unique
@@ -34,8 +41,8 @@ export interface WorkerOptions {
   db: Database;
   adapters: Partial<Record<ChainId, SettlementAdapter>>;
   coverage?: Partial<Record<ChainId, CoverageChecker>>;
-  /** OrderService.markStale: takes orders out of the live book. */
-  markStale: (orderIds: string[]) => Promise<unknown>;
+  /** OrderService.failMatch: fails the match and returns the innocent side's quantity. */
+  failMatch: (failed: { match: Match; fault: MatchFault; reason: string; attempts: number }) => Promise<{ status: number }>;
   /** Unix seconds. */
   clock: () => number;
   sleep: (ms: number) => Promise<void>;
@@ -119,22 +126,22 @@ export class SettlementWorker {
 
         // 2. Expiry.
         const now = this.o.clock();
-        if (now >= match.expiresAt) return this.fail(match, attempts, "expired before settlement (expires_at has passed)");
+        if (now >= match.expiresAt) {
+          return this.fail(match, attempts, "expired before settlement (expires_at has passed)", "expired");
+        }
         if (match.expiresAt - now < this.o.deadlineMarginSecs) {
-          return this.fail(match, attempts, `too close to expires_at to settle in time (< ${this.o.deadlineMarginSecs} s left)`);
+          return this.fail(
+            match,
+            attempts,
+            `too close to expires_at to settle in time (< ${this.o.deadlineMarginSecs} s left)`,
+            "expired",
+          );
         }
 
         // 3. Both legs still delegated and funded (spec §3.5).
-        const checker = this.o.coverage?.[match.chain];
-        if (checker) {
-          const needs = matchNeeds(match);
-          const [seller, buyer] = await checker.check([needs.seller, needs.buyer]);
-          const stale = [...(seller ? [match.sellOrderId] : []), ...(buyer ? [match.buyOrderId] : [])];
-          if (stale.length > 0) {
-            await this.o.markStale(stale);
-            const why = [seller && `seller: ${seller}`, buyer && `buyer: ${buyer}`].filter(Boolean).join("; ");
-            return this.fail(match, attempts, `delegation no longer covers the match (${why}); order marked stale`);
-          }
+        const uncovered = await this.uncovered(match);
+        if (uncovered) {
+          return this.fail(match, attempts, `delegation no longer covers the match (${uncovered.why})`, uncovered.fault);
         }
 
         // 4. Send.
@@ -150,7 +157,18 @@ export class SettlementWorker {
         const failure = e instanceof SettlementFailure ? e : null;
         lastError = e instanceof Error ? e.message : String(e);
         // Unknown exceptions are treated as transient: bounded retries, then a final check.
-        if (failure && !failure.transient) return this.fail(match, attempts, lastError);
+        if (failure && !failure.transient) {
+          // A refusal about delegation or funds: find the side at fault on-chain.
+          // DelegateNotSet (6025), InsufficientDelegation (6026), or a token transfer short of funds.
+          const aboutCoverage =
+            failure.code === 6025 ||
+            failure.code === 6026 ||
+            failure.errorName === "DelegateNotSet" ||
+            failure.errorName === "InsufficientDelegation" ||
+            /insufficient funds/i.test(lastError);
+          const uncovered = aboutCoverage ? await this.uncovered(match).catch(() => null) : null;
+          return this.fail(match, attempts, lastError, uncovered?.fault ?? "none");
+        }
         if (tries >= this.o.maxAttempts || attempts >= this.o.maxAttempts) {
           return this.giveUp(adapter, match, attempts, lastError);
         }
@@ -177,24 +195,34 @@ export class SettlementWorker {
       );
       throw new Error(`match ${match.id}: chain unreachable after ${attempts} attempts; will retry on the next run`);
     }
-    return this.fail(match, attempts, `gave up after ${attempts} attempts: ${lastError}`);
+    return this.fail(match, attempts, `gave up after ${attempts} attempts: ${lastError}`, "none");
+  }
+
+  /** The side(s) whose on-chain delegation or balance does not cover the match, if any. */
+  private async uncovered(match: Match): Promise<{ fault: "seller" | "buyer" | "both"; why: string } | null> {
+    const checker = this.o.coverage?.[match.chain];
+    if (!checker) return null;
+    const needs = matchNeeds(match);
+    const [seller, buyer] = await checker.check([needs.seller, needs.buyer]);
+    if (!seller && !buyer) return null;
+    const why = [seller && `seller: ${seller}`, buyer && `buyer: ${buyer}`].filter(Boolean).join("; ");
+    return { fault: seller && buyer ? "both" : seller ? "seller" : "buyer", why };
   }
 
   private async confirm(match: Match, attempts: number, txHash: string, already: boolean): Promise<WorkerResult> {
     await asServiceRole(this.o.db, async (tx) => {
       await writeSettlement(tx, { matchId: match.id, chain: match.chain, status: "confirmed", attempts, txHash, error: null });
       await setMatchStatus(tx, match.id, "settled");
+      await addSettledQuantity(tx, [match.buyOrderId, match.sellOrderId], match.quantity);
     });
     this.o.log?.("settled", { matchId: match.id, txHash, alreadySettled: already, attempts });
     return already ? "already_settled" : "settled";
   }
 
-  private async fail(match: Match, attempts: number, error: string): Promise<WorkerResult> {
-    await asServiceRole(this.o.db, async (tx) => {
-      await writeSettlement(tx, { matchId: match.id, chain: match.chain, status: "failed", attempts, txHash: null, error });
-      await setMatchStatus(tx, match.id, "failed");
-    });
-    this.o.log?.("settle_failed", { matchId: match.id, attempts, error });
+  private async fail(match: Match, attempts: number, error: string, fault: MatchFault): Promise<WorkerResult> {
+    const r = await this.o.failMatch({ match, fault, reason: error, attempts });
+    if (r.status !== 200) throw new Error(`match ${match.id}: could not record the failure (status ${r.status}); will retry`);
+    this.o.log?.("settle_failed", { matchId: match.id, attempts, fault, error });
     return "failed";
   }
 }

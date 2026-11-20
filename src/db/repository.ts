@@ -126,12 +126,17 @@ export interface OrderRow {
   intentVersion: number;
   intentSignature: string;
   filledQuantity: bigint;
+  /** Migration 20261120120000: settled on-chain / released / voided by failed matches. */
+  settledQuantity?: bigint;
+  releasedQuantity?: bigint;
+  voidedQuantity?: bigint;
   status: OrderStatus;
 }
 
 const ORDER_COLUMNS = `id::text, seq::text, chain_id, asset, side::text, quantity::text, lot_size::text,
   limit_price::text, payment_asset, wallet, nonce, extract(epoch from expires_at)::bigint::text as expires_at,
-  intent_version, intent_signature, filled_quantity::text, status::text`;
+  intent_version, intent_signature, filled_quantity::text, settled_quantity::text, released_quantity::text,
+  voided_quantity::text, status::text`;
 
 interface RawOrder {
   id: string;
@@ -149,6 +154,9 @@ interface RawOrder {
   intent_version: number;
   intent_signature: string;
   filled_quantity: string;
+  settled_quantity: string;
+  released_quantity: string;
+  voided_quantity: string;
   status: OrderStatus;
 }
 
@@ -169,18 +177,25 @@ function toOrderRow(o: RawOrder): OrderRow {
     intentVersion: Number(o.intent_version),
     intentSignature: o.intent_signature,
     filledQuantity: BigInt(o.filled_quantity),
+    settledQuantity: BigInt(o.settled_quantity),
+    releasedQuantity: BigInt(o.released_quantity),
+    voidedQuantity: BigInt(o.voided_quantity),
     status: o.status,
   };
 }
 
 /**
- * Every order that is not terminal (`open`, `partially_filled`, `stale`), in their
- * original arrival sequence: what the engine's books are rebuilt from on start.
+ * What the engine is rebuilt from on start, in the original arrival sequence: every
+ * order that is not terminal (`open`, `partially_filled`, `stale`), and the `filled`
+ * ones with quantity still in flight (a failed match may give it back to them).
  */
 export async function loadOpenOrders(tx: Queryable): Promise<OrderRow[]> {
   const r = await tx.query<RawOrder>(
     `select ${ORDER_COLUMNS} from public.orders
-      where status in ('open', 'partially_filled', 'stale') order by seq`,
+      where status in ('open', 'partially_filled', 'stale')
+         or (status = 'filled' and filled_quantity - settled_quantity - released_quantity - voided_quantity > 0)
+      -- qualified: a bare "seq" would sort the text output column (1, 10, 2)
+      order by public.orders.seq`,
   );
   return r.rows.map(toOrderRow);
 }
@@ -257,17 +272,50 @@ export async function insertOrder(tx: Queryable, o: OrderRow): Promise<void> {
   );
 }
 
+/**
+ * Writes the engine's state of an order. A released or voided quantity lower than the
+ * stored one is refused by the guard trigger (never silently kept), and any change of
+ * them must come with its reversal rows (checked at commit).
+ */
 export async function updateOrderState(
   tx: Queryable,
   id: string,
   filledQuantity: bigint,
   status: OrderStatus,
+  counters: { releasedQuantity: bigint; voidedQuantity: bigint } = { releasedQuantity: 0n, voidedQuantity: 0n },
 ): Promise<void> {
   const r = await tx.query<{ id: string }>(
-    `update public.orders set filled_quantity = $2, status = $3 where id = $1 returning id::text`,
-    [id, filledQuantity.toString(), status],
+    `update public.orders
+        set filled_quantity = $2, status = $3,
+            released_quantity = $4, voided_quantity = $5
+      where id = $1 returning id::text`,
+    [id, filledQuantity.toString(), status, counters.releasedQuantity.toString(), counters.voidedQuantity.toString()],
   );
   if (r.rows.length !== 1) throw new Error(`order ${id} not found`);
+}
+
+/** A settled match: its quantity is settled on both orders (checked at commit). */
+export async function addSettledQuantity(tx: Queryable, orderIds: readonly string[], quantity: bigint): Promise<void> {
+  for (const id of orderIds) {
+    await tx.query(`update public.orders set settled_quantity = settled_quantity + $2 where id = $1`, [id, quantity.toString()]);
+  }
+}
+
+/** The audit row of a failed match on one of its orders (append-only). */
+export async function insertReversal(
+  tx: Queryable,
+  r: { matchId: string; orderId: string; kind: "released" | "voided"; fault: string; quantity: bigint; reason: string },
+): Promise<void> {
+  await tx.query(
+    `insert into public.match_reversals (match_id, order_id, kind, fault, quantity, reason) values ($1, $2, $3, $4, $5, $6)`,
+    [r.matchId, r.orderId, r.kind, r.fault, r.quantity.toString(), r.reason.slice(0, 1000)],
+  );
+}
+
+/** True when migration 20261120120000_match_reversals is applied. */
+export async function hasMatchReversals(tx: Queryable): Promise<boolean> {
+  const r = await tx.query<{ ok: boolean }>(`select to_regclass('public.match_reversals') is not null as ok`);
+  return r.rows[0]?.ok === true;
 }
 
 // ---------------------------------------------------------------------------
@@ -337,7 +385,9 @@ export async function loadMatches(tx: Queryable): Promise<MatchRow[]> {
     `select id::text, seq::text, chain_id, asset, buy_order::text, sell_order::text, maker_order::text,
             quantity::text, lot_size::text, price::text, payment_amount::text,
             extract(epoch from expires_at)::bigint::text as expires_at, status::text
-       from public.matches order by seq`,
+       from public.matches
+      -- qualified: a bare "seq" would sort the text output column
+      order by public.matches.seq`,
   );
   return r.rows.map((m) => ({
     id: m.id,

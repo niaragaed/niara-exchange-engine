@@ -350,6 +350,7 @@ describe("single instance", () => {
     query: async <T>(sql: string) => {
       if (sql.includes("pg_try_advisory_lock")) return { rows: [{ locked: answers.locked }] as T[] };
       if (sql.includes("pg_has_role")) return { rows: [{ ok: answers.member }] as T[] };
+      if (sql.includes("match_reversals")) return { rows: [{ ok: true }] as T[] };
       throw new Error(`unexpected query: ${sql}`);
     },
     transaction: async () => {

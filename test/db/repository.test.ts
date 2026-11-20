@@ -52,6 +52,9 @@ function row(overrides: Partial<OrderRow> & Pick<OrderRow, "seq" | "wallet" | "s
     intentVersion: 1,
     intentSignature: "test-signature",
     filledQuantity: 0n,
+    settledQuantity: 0n,
+    releasedQuantity: 0n,
+    voidedQuantity: 0n,
     status: "open",
     ...overrides,
   };
@@ -210,6 +213,13 @@ describe("orders and matches", () => {
       [5, "open"],
     ]);
     expect(open[0]).toEqual(rows[5]);
+  });
+
+  it("orders by numeric seq, not by its text (10 after 9, not after 1)", async () => {
+    await asServiceRole(t.db, async (tx) => {
+      for (const seq of [12, 1, 10, 2, 11, 9]) await insertOrder(tx, row({ seq, wallet: ALICE, side: "sell" }));
+    });
+    expect((await asServiceRole(t.db, loadOpenOrders)).map((o) => o.seq)).toEqual([1, 2, 9, 10, 11, 12]);
   });
 
   it("keeps uint256 amounts exact", async () => {

@@ -298,13 +298,57 @@ optional peer chain; `vite` and `@types/node` are pinned directly instead.
   `redactSecrets` (URL, user, host, password, a private RPC URL and its
   query values, the service key): driver errors can quote them.
 
+## Failed matches after both orders were filled (migration `20261120120000`)
+
+A match fills both orders when it is made; settlement comes later and can fail
+(a delegation revoked, the chain refusing, expiry). Before this migration the
+innocent side's quantity was lost: `filled_quantity` cannot decrease.
+
+- **Counters, all monotonic.** `filled_quantity` keeps its meaning (total ever
+  matched). New: `settled_quantity` (settled on-chain), `released_quantity`
+  (given back from failed matches, the order was not at fault),
+  `voided_quantity` (lost, it was at fault). Net matched = filled − released −
+  voided; remaining = quantity − net; in flight = filled − settled − released −
+  voided. Status follows net matched. `filled` is no longer terminal, but the
+  guard trigger lets it change only in the same update that releases or voids.
+- **Audit.** `match_reversals`: one row per (failed match, order) with kind,
+  fault, quantity and reason; append-only (no update or delete, for the
+  service too); hidden from clients. Deferred constraint triggers check at
+  commit that each order's settled/released/voided equals its settled matches
+  and reversal rows, that a failed match has exactly one row per order of its
+  quantity, and that a settled match has none. The worker settles the match
+  and both orders' `settled_quantity` in one transaction. The service writes
+  the exact engine values, so a lower value fails loudly instead of being kept.
+- **Faults** (`match_fault`), chosen by the worker: `seller` / `buyer` / `both`
+  (the delegate check before settling, or a chain refusal about delegation or
+  funds, re-checked on-chain to find the side); `expired`; `none` (another
+  refusal, or retries ran out).
+- **Who gets what back** (`MatchingEngine.reverse`):
+  - at fault: voided, the order becomes stale (its wallet can cancel it);
+  - innocent: released, and re-enters the market at its original priority
+    (seq) through the matching loop, so the book never crosses (an order that
+    arrived while it was out may now cross it); if it is no longer live it
+    expires; if it was cancelled, expired or stale the release is accounting
+    only;
+  - `expired`: both released; an order expiring at or before the match expires,
+    the other re-enters;
+  - `none`: both released but stale: re-entering, they would match each other
+    again and fail the same way in a loop.
+- **Restart.** `filled` orders with quantity in flight are restored too (out
+  of the book), so a failure after a restart can still give their quantity
+  back.
+- **Order of rollout.** The service checks for `match_reversals` at start and
+  refuses to run until the migration is applied.
+- **Fixed on the way:** restore and `loadMatches` ordered by `seq::text` (the
+  text output column), so with 10 or more rows seq 10 came before 2 and the
+  rebuild refused the orders. Both now order by the table's numeric column; a
+  regression test covers it.
+
 ## Not done yet
 
 - EVM settlement adapters: matches on the EVM testnets stay `pending`.
-- **Busted trades.** When a match fails after matching (delegation revoked,
-  chain refusal, expiry), the engine had already filled both orders and
-  `filled_quantity` cannot decrease, so the counterparty's filled quantity
-  is lost to it. See "Spec edits needed".
+- A `none` failure leaves both orders stale; nothing re-offers them
+  automatically (an operator or the wallets decide).
 - A stale order never returns to the book (spec §5 allows
   `stale → open`); its wallet can cancel it and place a new one.
 - Aggregate delegations: several open orders of one wallet on one mint are
@@ -382,13 +426,12 @@ These go to `niara-exchange-solana`, which owns the spec.
    `expiresAt`" is enforced off-chain only until `settle` checks the window:
    the worker does not send within 90 s of `expires_at` (a sent transaction
    can land up to a blockhash lifetime later) and fails the match instead.
-10. **§5, failed matches after matching (busted trades).** Define what
-    happens to the two orders when a match fails after both were filled:
-    proposal, the defaulting order (uncovered delegation) is marked stale
-    and the other order gets its quantity back (open again, or a new order
-    for the remainder), which needs a schema change, since
-    `filled_quantity` cannot decrease today (e.g. a `reverted_quantity`
-    column, or reversal rows).
+10. **§5, failed matches after matching.** Replace the open question with the
+    design above (migration `20261120120000`): the counters and their meaning,
+    `match_reversals` as the audit trail, the five faults, and who gets the
+    quantity back (innocent side re-enters through matching at its original
+    priority; the side at fault is voided and stale; `none` leaves both
+    stale).
 11. **§5, settlement statuses.** Record the meanings: settlements `pending`
     (created or waiting for a retry), `submitted` (handed to the chain),
     `confirmed` (tx hash), `failed` (error); matches `settling` while an

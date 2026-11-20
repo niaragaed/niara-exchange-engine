@@ -1,6 +1,7 @@
 import type { Queryable } from "../db/database.ts";
-import { insertMatch, insertOrder, updateOrderState } from "../db/repository.ts";
-import type { EngineEvent, MatchingEngine, OrderView } from "../engine/engine.ts";
+import { insertMatch, insertOrder, insertReversal, updateOrderState } from "../db/repository.ts";
+import { setMatchStatus, writeSettlement } from "../db/settlements.ts";
+import type { EngineEvent, MatchFault, MatchingEngine, OrderView, Reversal } from "../engine/engine.ts";
 import type { Match } from "../engine/types.ts";
 import type { Catalog } from "./catalog.ts";
 
@@ -91,6 +92,37 @@ export async function persistEvents(
     if (skip.has(id)) continue;
     const o = engine.getOrder(id);
     if (!o) throw new PersistError(`engine has no order ${id}`);
-    await updateOrderState(tx, id, o.filledQuantity, o.status);
+    await updateOrderState(tx, id, o.filledQuantity, o.status, o);
   }
+}
+
+/**
+ * A match failed after both orders were filled (`MatchingEngine.reverse` already ran):
+ * in the caller's transaction, the settlement and the match become `failed`, each order
+ * gets its audit row (released or voided), the orders their new state, and any match
+ * the re-entered order made is inserted. The deferred checks of migration
+ * 20261120120000 verify at commit that counters and rows agree.
+ */
+export async function persistReversal(
+  tx: Queryable,
+  engine: MatchingEngine,
+  catalog: Catalog,
+  failed: { match: Match; fault: MatchFault; reason: string; attempts: number },
+  result: { reversals: readonly Reversal[]; events: readonly EngineEvent[]; matches: readonly Match[] },
+): Promise<void> {
+  const { match } = failed;
+  await writeSettlement(tx, {
+    matchId: match.id,
+    chain: match.chain,
+    status: "failed",
+    attempts: failed.attempts,
+    txHash: null,
+    error: failed.reason,
+  });
+  await setMatchStatus(tx, match.id, "failed");
+  for (const r of result.reversals) {
+    await insertReversal(tx, { matchId: match.id, orderId: r.orderId, kind: r.kind, fault: failed.fault, quantity: r.quantity, reason: failed.reason });
+  }
+  for (const m of result.matches) await insertMatch(tx, m, dbAssetOf(catalog, m));
+  await persistEvents(tx, engine, result.events);
 }

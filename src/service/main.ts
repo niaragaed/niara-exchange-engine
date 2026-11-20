@@ -10,7 +10,7 @@ import { SolanaSettlementAdapter } from "../adapters/solana-adapter.ts";
 import { loadKeypairFile } from "../solana/keypair.ts";
 import { SettlementWorker } from "../worker/worker.ts";
 import { createApp } from "./http.ts";
-import { NotSingleInstanceError, OrderService, ServiceRoleError } from "./order-service.ts";
+import { NotSingleInstanceError, OrderService, SchemaNotReadyError, ServiceRoleError } from "./order-service.ts";
 
 /**
  * Order service entry point: `npm start` (node --env-file=.env src/service/main.ts).
@@ -69,7 +69,9 @@ async function main(): Promise<void> {
       log,
     });
   } catch (e) {
-    if (e instanceof NotSingleInstanceError || e instanceof ServiceRoleError) die("refused_to_start", e);
+    if (e instanceof NotSingleInstanceError || e instanceof ServiceRoleError || e instanceof SchemaNotReadyError) {
+      die("refused_to_start", e);
+    }
     throw e;
   }
 
@@ -97,7 +99,7 @@ async function main(): Promise<void> {
       db,
       adapters: { "solana-devnet": adapter },
       coverage,
-      markStale: (ids) => service.markStale(ids),
+      failMatch: (failed) => service.failMatch(failed),
       clock: () => Math.floor(Date.now() / 1000),
       sleep: (ms) => new Promise((resolve) => setTimeout(resolve, ms)),
       maxAttempts: config.workerMaxAttempts,

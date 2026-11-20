@@ -1,6 +1,6 @@
 import fc from "fast-check";
 import { describe, expect, it } from "vitest";
-import { MatchingEngine, type CancelResult, type EngineEvent, type OrderView } from "../../src/engine/engine.ts";
+import { MatchingEngine, type CancelResult, type EngineEvent, type MatchFault, type OrderView } from "../../src/engine/engine.ts";
 import { isUuidV4 } from "../../src/engine/ids.ts";
 import type { Match, OrderInput, Side } from "../../src/engine/types.ts";
 import { CHAIN, LOT, NOW, OTHER_CHAIN, USDT, market, seededUuidV4 } from "./helpers.ts";
@@ -32,7 +32,8 @@ type Command =
   | { kind: "stale"; pick: number }
   | { kind: "tick"; secs: number }
   | { kind: "expire" }
-  | { kind: "setMin"; pick: number };
+  | { kind: "setMin"; pick: number }
+  | { kind: "reverse"; pick: number; fault: MatchFault };
 
 const commandArb: fc.Arbitrary<Command> = fc.oneof(
   {
@@ -52,6 +53,14 @@ const commandArb: fc.Arbitrary<Command> = fc.oneof(
   { weight: 1, arbitrary: fc.record({ kind: fc.constant("tick" as const), secs: fc.integer({ min: 1, max: 300 }) }) },
   { weight: 1, arbitrary: fc.record({ kind: fc.constant("expire" as const) }) },
   { weight: 1, arbitrary: fc.record({ kind: fc.constant("setMin" as const), pick: fc.nat({ max: MINS.length - 1 }) }) },
+  {
+    weight: 2,
+    arbitrary: fc.record({
+      kind: fc.constant("reverse" as const),
+      pick: fc.nat(),
+      fault: fc.constantFrom<MatchFault>("seller", "buyer", "both", "expired", "none"),
+    }),
+  },
 );
 
 interface Run {
@@ -62,6 +71,8 @@ interface Run {
   placed: OrderInput[];
   engine: MatchingEngine;
   crossedAfter: number[];
+  /** Ids of the matches that failed and were reversed. */
+  reversed: Set<string>;
 }
 
 function run(commands: readonly Command[], seed: number): Run {
@@ -71,7 +82,7 @@ function run(commands: readonly Command[], seed: number): Run {
   );
   engine.upsertMarket(market({ chain: BOND.chain, asset: BOND.asset, assetClass: "fixed_income" }));
 
-  const out: Run = { events: [], matches: [], placed: [], engine, crossedAfter: [] };
+  const out: Run = { events: [], matches: [], placed: [], engine, crossedAfter: [], reversed: new Set() };
   const mins: bigint[] = MARKETS.map((_, i) => (i === 2 ? FIXED_MIN : 0n));
   let now = NOW;
   let n = 0;
@@ -116,6 +127,17 @@ function run(commands: readonly Command[], seed: number): Run {
       case "expire":
         out.events.push(...engine.expire(now));
         break;
+      case "reverse": {
+        const open = out.matches.filter(({ match }) => !out.reversed.has(match.id));
+        const target = open[c.pick % Math.max(open.length, 1)];
+        if (!target) break;
+        out.reversed.add(target.match.id);
+        const r = engine.reverse(target.match, c.fault, now);
+        out.events.push(...r.events);
+        const i = MARKETS.findIndex((m) => m.chain === target.match.chain && m.asset === target.match.asset);
+        for (const match of r.matches) out.matches.push({ match, at: now, min: mins[i] ?? 0n });
+        break;
+      }
       case "setMin": {
         const m = MARKETS[VARIABLE_MIN_MARKET]!;
         mins[VARIABLE_MIN_MARKET] = MINS[c.pick]!;
@@ -143,7 +165,7 @@ function orderOf(r: Run, id: string): OrderView {
 }
 
 describe("matching engine invariants (fast-check)", () => {
-  it("no overfill: each order's fills sum to its filled quantity, never above its quantity", () => {
+  it("no overfill: each order's fills sum to its filled quantity, and net matched never exceeds its quantity", () => {
     fc.assert(
       fc.property(commandsArb, fc.nat(), (commands, seed) => {
         const r = run(commands, seed);
@@ -155,7 +177,8 @@ describe("matching engine invariants (fast-check)", () => {
         for (const input of r.placed) {
           const o = orderOf(r, input.id);
           expect(filled.get(input.id) ?? 0n).toBe(o.filledQuantity);
-          expect(o.filledQuantity).toBeLessThanOrEqual(input.quantity);
+          // Total matched can exceed the quantity after a release re-enters; net cannot.
+          expect(o.filledQuantity - o.releasedQuantity - o.voidedQuantity).toBeLessThanOrEqual(input.quantity);
           expect(o.filledQuantity % LOT).toBe(0n);
         }
       }),
@@ -193,7 +216,8 @@ describe("matching engine invariants (fast-check)", () => {
         const resting = new Map<string, bigint>();
         for (const input of r.placed) {
           const o = orderOf(r, input.id);
-          expect(o.filledQuantity + o.remaining).toBe(input.quantity);
+          // Nothing decreases: what failed matches gave back sits in released/voided.
+          expect(o.filledQuantity - o.releasedQuantity - o.voidedQuantity + o.remaining).toBe(input.quantity);
           expect(o.status === "filled").toBe(o.remaining === 0n);
           if (o.status === "open" || o.status === "partially_filled") {
             const key = `${o.chain}/${o.asset}/${o.side}`;
@@ -284,6 +308,27 @@ describe("matching engine invariants (fast-check)", () => {
           if ("type" in e && e.type === "order_cancelled" && e.reason === "below_min_notional") {
             expect(orderOf(r, e.orderId).status).toBe("cancelled");
           }
+        }
+      }),
+      PARAMS,
+    );
+  });
+
+  it("reversals: every order's released + voided equals its reversed matches, and nothing is ever counted twice", () => {
+    fc.assert(
+      fc.property(commandsArb, fc.nat(), (commands, seed) => {
+        const r = run(commands, seed);
+        const back = new Map<string, bigint>();
+        for (const { match } of r.matches) {
+          if (!r.reversed.has(match.id)) continue;
+          for (const id of [match.buyOrderId, match.sellOrderId]) back.set(id, (back.get(id) ?? 0n) + match.quantity);
+        }
+        for (const input of r.placed) {
+          const o = orderOf(r, input.id);
+          expect(o.releasedQuantity + o.voidedQuantity).toBe(back.get(input.id) ?? 0n);
+          // Net matched stays within the order's quantity.
+          const net = o.filledQuantity - o.releasedQuantity - o.voidedQuantity;
+          expect(net >= 0n && net <= input.quantity).toBe(true);
         }
       }),
       PARAMS,

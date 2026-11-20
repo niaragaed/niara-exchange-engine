@@ -16,7 +16,8 @@ export interface TestDb {
   db: Database;
 }
 
-export async function startPglite(): Promise<TestDb> {
+/** `before`: apply only the migrations whose file name sorts before it. */
+export async function startPglite(options: { before?: string } = {}): Promise<TestDb> {
   const pglite = await PGlite.create();
   await pglite.exec(`
     create role anon nologin;
@@ -25,9 +26,14 @@ export async function startPglite(): Promise<TestDb> {
     grant usage on schema public to anon, authenticated, service_role;
   `);
   for (const file of readdirSync(MIGRATIONS).filter((f) => f.endsWith(".sql")).sort()) {
-    await pglite.exec(readFileSync(join(MIGRATIONS, file), "utf8"));
+    if (options.before !== undefined && file >= options.before) break;
+    await applyMigration(pglite, file);
   }
   return { pglite, db: pgliteDatabase(pglite) };
+}
+
+export async function applyMigration(pglite: PGlite, file: string): Promise<void> {
+  await pglite.exec(readFileSync(join(MIGRATIONS, file), "utf8"));
 }
 
 export function pgliteDatabase(pglite: PGlite): Database {
@@ -49,6 +55,7 @@ export function pgliteDatabase(pglite: PGlite): Database {
 export async function resetData(pglite: PGlite): Promise<void> {
   await pglite.exec(`
     delete from public.settlements;
+    delete from public.match_reversals;
     delete from public.matches;
     delete from public.orders;
     delete from public.listings;

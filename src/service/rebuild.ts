@@ -26,7 +26,7 @@ export async function rebuildEngine(
   const orders: RestoredOrder[] = snapshot.open.map((r) => {
     const asset = canonicalAddress(r.chain, r.asset);
     const paymentAsset = canonicalAddress(r.chain, r.paymentAsset);
-    if (asset === null || paymentAsset === null || r.status === "filled" || r.status === "cancelled" || r.status === "expired") {
+    if (asset === null || paymentAsset === null || r.status === "cancelled" || r.status === "expired") {
       throw new EngineInvariantError(`order ${r.id} cannot be restored`);
     }
     return {
@@ -42,6 +42,8 @@ export async function rebuildEngine(
       expiresAt: r.expiresAt,
       seq: r.seq,
       filledQuantity: r.filledQuantity,
+      releasedQuantity: r.releasedQuantity ?? 0n,
+      voidedQuantity: r.voidedQuantity ?? 0n,
       status: r.status,
     };
   });

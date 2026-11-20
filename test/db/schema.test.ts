@@ -122,7 +122,9 @@ afterAll(async () => {
 
 beforeEach(async () => {
   // Tests share one database; each starts without orders/matches.
-  await db.exec("delete from public.settlements; delete from public.matches; delete from public.orders;");
+  await db.exec(
+    "delete from public.settlements; delete from public.match_reversals; delete from public.matches; delete from public.orders;",
+  );
 });
 
 describe("chains", () => {
@@ -260,7 +262,14 @@ describe("matches", () => {
     await expect(db.query("update public.matches set price = 10 where id = $1", [UUID_A])).rejects.toThrow(
       /only status/,
     );
-    await db.query("update public.matches set status = 'settled' where id = $1", [UUID_A]);
+    // Settling a match also settles its quantity on both orders (checked at commit).
+    await db.transaction(async (tx) => {
+      await tx.query("update public.matches set status = 'settled' where id = $1", [UUID_A]);
+      await tx.query(
+        "update public.orders set filled_quantity = 100, status = 'partially_filled', settled_quantity = 100 where id in ($1, $2)",
+        [buy, sell],
+      );
+    });
     await expect(db.query("update public.matches set status = 'pending' where id = $1", [UUID_A])).rejects.toThrow(
       /terminal/,
     );
@@ -330,7 +339,10 @@ describe("row level security", () => {
         where relnamespace = 'public'::regnamespace and relkind = 'r' order by relname`,
     );
     expect(r.rows).toEqual(
-      ["chains", "listings", "matches", "orders", "settlements"].map((relname) => ({ relname, relrowsecurity: true })),
+      ["chains", "listings", "match_reversals", "matches", "orders", "settlements"].map((relname) => ({
+        relname,
+        relrowsecurity: true,
+      })),
     );
   });
 
@@ -384,6 +396,7 @@ describe("row level security", () => {
         await asRole(role, async () => {
           await expect(db.query("select * from public.matches")).rejects.toThrow(/permission denied/);
           await expect(db.query("select * from public.settlements")).rejects.toThrow(/permission denied/);
+          await expect(db.query("select * from public.match_reversals")).rejects.toThrow(/permission denied/);
         });
       });
     });

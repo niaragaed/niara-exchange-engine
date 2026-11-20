@@ -6,10 +6,11 @@ import {
   checkServiceRole,
   countOpenOrders,
   findOrderByNonce,
+  hasMatchReversals,
   loadChains,
   loadListings,
 } from "../db/repository.ts";
-import type { CancelReason, EngineEvent, MatchingEngine, OrderView } from "../engine/engine.ts";
+import type { CancelReason, EngineEvent, MatchFault, MatchingEngine, OrderView } from "../engine/engine.ts";
 import type { Match, OrderInput } from "../engine/types.ts";
 import { admitCancelIntent, parseCancelIntent } from "../intents/cancel.ts";
 import { IntentError } from "../intents/types.ts";
@@ -19,7 +20,7 @@ import { loadSettlement } from "../db/settlements.ts";
 import { isUuidV4 } from "../engine/ids.ts";
 import { orderNeed, type CoverageChecker } from "../solana/coverage.ts";
 import { buildCatalog, canonicalAddress, type Catalog } from "./catalog.ts";
-import { persistEvents, persistPlacement } from "./persist.ts";
+import { persistEvents, persistPlacement, persistReversal } from "./persist.ts";
 import { rebuildEngine } from "./rebuild.ts";
 
 /**
@@ -64,6 +65,13 @@ export class NotSingleInstanceError extends Error {
   constructor() {
     super("another order service instance holds the advisory lock: refusing to start");
     this.name = "NotSingleInstanceError";
+  }
+}
+
+export class SchemaNotReadyError extends Error {
+  constructor() {
+    super("migration 20261120120000_match_reversals is not applied: refusing to start");
+    this.name = "SchemaNotReadyError";
   }
 }
 
@@ -169,6 +177,7 @@ export class OrderService {
    */
   static async start(deps: OrderServiceDeps): Promise<OrderService> {
     if (!(await checkServiceRole(deps.db))) throw new ServiceRoleError();
+    if (!(await hasMatchReversals(deps.db))) throw new SchemaNotReadyError();
     if (!(await acquireInstanceLock(deps.db))) throw new NotSingleInstanceError();
     const { engine, catalog } = await rebuildEngine(deps.db, {
       newMatchId: deps.newMatchId,
@@ -391,6 +400,40 @@ export class OrderService {
           asks: b.asks.map(level),
         },
       };
+    });
+  }
+
+  /**
+   * The settlement worker gives up on a match (spec §5 gap: failed after both orders
+   * were filled). In one transaction: the match and its settlement become `failed`, the
+   * at-fault side's quantity is voided (order stale), the other side's released and
+   * returned to the book (`MatchingEngine.reverse`), with one audit row per order.
+   */
+  async failMatch(failed: { match: Match; fault: MatchFault; reason: string; attempts: number }): Promise<Reply> {
+    return this.mutex.run(async () => {
+      const { match } = failed;
+      if (!this.engine.getOrder(match.buyOrderId) || !this.engine.getOrder(match.sellOrderId)) {
+        // Not fatal: nothing changed. The worker leaves the match for a later run.
+        this.deps.log?.("fail_match_unknown_orders", { matchId: match.id });
+        return error(409, "unknown_orders", "the engine does not hold both orders of this match");
+      }
+      return this.inTransaction(async (tx) => {
+        const result = this.engine.reverse(match, failed.fault, this.deps.clock());
+        await persistReversal(tx, this.engine, this.catalog, failed, result);
+        this.deps.log?.("match_failed", {
+          matchId: match.id,
+          fault: failed.fault,
+          reversals: result.reversals.map((r) => ({ orderId: r.orderId, kind: r.kind, quantity: r.quantity.toString() })),
+          rematched: result.matches.map((m) => m.id),
+        });
+        return {
+          status: 200,
+          body: {
+            reversals: result.reversals.map((r) => ({ ...r, quantity: r.quantity.toString() })),
+            matches: result.matches.map(matchJson),
+          },
+        };
+      });
     });
   }
 
