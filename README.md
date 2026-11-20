@@ -138,3 +138,11 @@ EVM entry point checks the node's chain id; ABIs are vendored in
   its password from `.env`. Decrypted in memory; never printed.
 - **Before enabling a chain:** review its entry in `config/evm-testnets.json`
   and set `"reviewed": true`, then add it to `EVM_SETTLEMENT_CHAINS`.
+
+```bash
+# Mirror a chain's ListingRegistry listings (read-only on-chain: eth_call and
+# eth_getLogs from the deployment block). Dry run first; --apply writes, and only
+# once the chain is marked reviewed in config/evm-testnets.json.
+node --env-file=.env scripts/sync-evm-listings.ts --chain base-sepolia
+node --env-file=.env scripts/sync-evm-listings.ts --chain base-sepolia --apply
+```

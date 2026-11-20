@@ -401,6 +401,21 @@ deployed. Same shape as Solana: one adapter per chain behind
   settles on (and checks allowances on); each must be deployed and reviewed
   in the config file, and the operator keystore and its password are then
   required. Empty by default: EVM matches stay `pending`.
+- **Listing sync** (`scripts/sync-evm-listings.ts --chain <chain>`). Finds
+  every token the ListingRegistry ever emitted a listing event for
+  (`ListingSubmitted`, `ListingQuoted`, `ListingApproved`,
+  `ListingSuspended`, `ListingDelisted`) from the deployment block, in
+  chunks (halved when an RPC refuses the range), then reads each token's
+  **current** state with `getListing`: the events find tokens, the contract
+  decides. Then the Solana rules: Approved listings are upserted with the
+  reviewed lot size (none guessed), others only get their status updated
+  if mirrored, a lot size never changes under live orders, and
+  `chains.settlement_program` / `quote_asset` are set (checked against
+  NiaraSettlement's `feeToken` and `listingRegistry`). Addresses are stored
+  checksummed; an existing row keeps its stored spelling (orders reference
+  it). Unlike Solana, `listings.tx_hash` is set: the token's latest
+  `ListingApproved` transaction. Dry run by default; `--apply` writes only
+  when the chain is marked reviewed.
 - **Nonces.** One worker, one transaction at a time, nonce from the
   `pending` count. The in-flight record is in memory: after a restart, a
   transaction still pending is not known, so a second send (next nonce) is
