@@ -9,12 +9,14 @@ import {
   decodeConfig,
   decodeListing,
   decodeMintDecimals,
+  decodeToken2022Metadata,
   pdas,
   type OnChainAssetClass,
   type OnChainListingStatus,
 } from "../solana/accounts.ts";
 import { PROGRAM_ID } from "../solana/idl.ts";
 import { assertDevnet, type SolanaRpc } from "../solana/rpc.ts";
+import { cleanMetadata, type TokenMetadata } from "./metadata.ts";
 
 /**
  * Listing sync (Solana devnet): reads the program's listings ON-CHAIN, READ-ONLY, and
@@ -29,6 +31,8 @@ import { assertDevnet, type SolanaRpc } from "../solana/rpc.ts";
  * - A lot size never changes while the market has live orders (their prices are per
  *   lot): the sync refuses and writes nothing.
  * - The quote asset must equal the on-chain `Config.fee_mint` (USDT, spec §3.4).
+ * - `symbol` and `name` come from the mint's own Token-2022 TokenMetadata extension
+ *   (null without one); the config file's symbol is only a review label.
  */
 
 const CHAIN = "solana-devnet" as const;
@@ -70,7 +74,10 @@ export function loadMarketConfig(path: string): MarketConfig {
 
 export interface ListingUpsert {
   asset: string;
+  /** The reviewed config file's label (logs only). */
   symbol: string;
+  /** Published on-chain by the token itself: stored in listings.symbol and listings.name. */
+  metadata: TokenMetadata;
   issuer: string | null;
   assetClass: AssetClass;
   status: ListingStatus;
@@ -88,6 +95,8 @@ export interface SyncPlan {
   /** Not Approved on-chain: status written only if the listing is already mirrored. */
   statusOnly: { asset: string; status: ListingStatus }[];
   skipped: { asset: string; reason: string }[];
+  /** On-chain metadata that was published but not stored. */
+  warnings: string[];
 }
 
 const CLASS: Record<OnChainAssetClass, AssetClass> = {
@@ -127,6 +136,7 @@ export async function planListingSync(rpc: SolanaRpc, config: MarketConfig): Pro
     upserts: [],
     statusOnly: [],
     skipped: [],
+    warnings: [],
   };
   for (const l of listings) {
     const asset = l.assetMint.toBase58();
@@ -145,9 +155,18 @@ export async function planListingSync(rpc: SolanaRpc, config: MarketConfig): Pro
       continue;
     }
     const currency = l.assetClass === "Currency";
+    let raw: { name: string; symbol: string } | null = null;
+    try {
+      raw = decodeToken2022Metadata(mint.data, l.assetMint);
+    } catch (e) {
+      plan.warnings.push(`${asset}: Token-2022 metadata not read (${(e as Error).message})`);
+    }
+    const { metadata, warnings } = cleanMetadata(raw ?? { symbol: null, name: null }, asset);
+    plan.warnings.push(...warnings);
     plan.upserts.push({
       asset,
       symbol: reviewed.symbol,
+      metadata,
       issuer: currency ? null : l.issuer.toBase58(),
       assetClass: CLASS[l.assetClass],
       status: "approved",
@@ -193,13 +212,27 @@ export async function applyListingSync(db: Database, plan: SyncPlan): Promise<Sy
       if (row && BigInt(row.lot_size) !== u.lotSize && Number(row.live) > 0) throw new LotSizeChangeError(u.asset);
       await tx.query(
         `insert into public.listings
-           (chain_id, asset, issuer, asset_class, status, cashback_eligible, doc_hash, asset_decimals, lot_size)
-         values ($1, $2, $3, $4, $5, $6, $7, $8, $9)
+           (chain_id, asset, issuer, asset_class, status, cashback_eligible, doc_hash, asset_decimals, lot_size,
+            symbol, name)
+         values ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11)
          on conflict (chain_id, asset) do update set
            issuer = excluded.issuer, asset_class = excluded.asset_class, status = excluded.status,
            cashback_eligible = excluded.cashback_eligible, doc_hash = excluded.doc_hash,
-           asset_decimals = excluded.asset_decimals, lot_size = excluded.lot_size`,
-        [CHAIN, u.asset, u.issuer, u.assetClass, u.status, u.cashbackEligible, u.docHash, u.assetDecimals, u.lotSize.toString()],
+           asset_decimals = excluded.asset_decimals, lot_size = excluded.lot_size,
+           symbol = excluded.symbol, name = excluded.name`,
+        [
+          CHAIN,
+          u.asset,
+          u.issuer,
+          u.assetClass,
+          u.status,
+          u.cashbackEligible,
+          u.docHash,
+          u.assetDecimals,
+          u.lotSize.toString(),
+          u.metadata.symbol,
+          u.metadata.name,
+        ],
       );
       upserted += 1;
     }

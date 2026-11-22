@@ -69,6 +69,9 @@ describe("plan (read-only on-chain)", () => {
     ]);
     const equity = plan.upserts.find((u) => u.symbol === "tEQTY")!;
     expect(equity).toMatchObject({ issuer: getAddress(T.issuer), cashbackEligible: true, docHash: "ab".repeat(32), status: "approved" });
+    // symbol() and name() of the token itself.
+    expect(equity.metadata).toEqual({ symbol: "tEQTY", name: "Test Demo Equity" });
+    expect(plan.warnings).toEqual([]);
     expect(equity.txHash).toMatch(/^0x[0-9a-f]{64}$/);
     const usdt = plan.upserts.find((u) => u.symbol === "mockUSDT")!;
     expect(usdt).toMatchObject({ issuer: null, cashbackEligible: false, docHash: null });
@@ -94,10 +97,52 @@ describe("plan (read-only on-chain)", () => {
   });
 });
 
+describe("token metadata (symbol, name)", () => {
+  it("stores null, with a warning, for a token whose symbol() and name() revert or are not storable", async () => {
+    const silent = getAddress("0x7e57000000000000000000000000000000000e03");
+    mock.addToken(silent, 18); // no symbol() / name()
+    mock.setListing(silent, { assetClass: 0, status: 2, issuer: T.issuer });
+    const noisy = getAddress("0x7e57000000000000000000000000000000000e04");
+    mock.addToken(noisy, 18, { symbol: "  TEST\u0007BELL ", name: "x".repeat(129) });
+    mock.setListing(noisy, { assetClass: 0, status: 2, issuer: T.issuer });
+    const s = settings();
+    const lotSizes = {
+      ...s.lotSizes,
+      [silent]: { symbol: "tSILENT", lotSize: SHARE },
+      [noisy]: { symbol: "tNOISY", lotSize: SHARE },
+    } as Record<Address, { symbol: string; lotSize: bigint }>;
+    const plan = await planEvmListingSync(client, settings({ lotSizes }));
+    expect(plan.upserts.find((u) => u.asset === silent)!.metadata).toEqual({ symbol: null, name: null });
+    expect(plan.upserts.find((u) => u.asset === noisy)!.metadata).toEqual({ symbol: null, name: null });
+    expect(plan.warnings).toHaveLength(4);
+    expect(plan.warnings.filter((w) => w.startsWith(silent)).join("\n")).toMatch(/symbol\(\) not read[\s\S]*name\(\) not read/);
+    expect(plan.warnings.filter((w) => w.startsWith(noisy)).join("\n")).toMatch(/symbol not stored[\s\S]*name not stored/);
+    await applyEvmListingSync(t.db, plan);
+    const r = await t.pglite.query<{ symbol: string | null; name: string | null }>(
+      `select symbol, name from public.listings where chain_id = 'base-sepolia' and asset in ($1, $2)`,
+      [silent, noisy],
+    );
+    expect(r.rows).toEqual([
+      { symbol: null, name: null },
+      { symbol: null, name: null },
+    ]);
+  });
+});
+
 describe("apply (PGlite, real migrations)", () => {
   async function listings() {
-    const r = await t.pglite.query<{ asset: string; asset_class: string; status: string; lot_size: string; tx_hash: string | null; issuer: string | null }>(
-      `select asset, asset_class::text, status::text, lot_size::text, tx_hash, issuer from public.listings where chain_id = 'base-sepolia' order by asset`,
+    const r = await t.pglite.query<{
+      asset: string;
+      asset_class: string;
+      status: string;
+      lot_size: string;
+      tx_hash: string | null;
+      issuer: string | null;
+      symbol: string | null;
+      name: string | null;
+    }>(
+      `select asset, asset_class::text, status::text, lot_size::text, tx_hash, issuer, symbol, name
+         from public.listings where chain_id = 'base-sepolia' order by asset`,
     );
     return r.rows;
   }
@@ -114,6 +159,11 @@ describe("apply (PGlite, real migrations)", () => {
       [getAddress(T.equity), "equity", "approved", SHARE.toString()],
     ]);
     expect(rows.every((r) => /^0x[0-9a-f]{64}$/.test(r.tx_hash ?? ""))).toBe(true);
+    expect(rows.map((r) => [r.symbol, r.name])).toEqual([
+      ["tBOND", "Test Demo Bond"],
+      ["mockUSDT", "Test Mock USDT"],
+      ["tEQTY", "Test Demo Equity"],
+    ]);
     const chain = await t.pglite.query<{ settlement_program: string; quote_asset: string }>(
       `select settlement_program, quote_asset from public.chains where id = 'base-sepolia'`,
     );

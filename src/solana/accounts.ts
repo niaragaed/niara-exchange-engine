@@ -123,3 +123,55 @@ export function decodeMintDecimals(data: Uint8Array): number {
   if (data[45] !== 1) throw new RangeError("mint is not initialized");
   return data[44]!;
 }
+
+/** SPL Token-2022: account type byte after the 165-byte base, then TLV extensions. */
+const TOKEN_2022_ACCOUNT_TYPE_OFFSET = 165;
+const TOKEN_2022_ACCOUNT_TYPE_MINT = 1;
+/** ExtensionType::TokenMetadata (spl-token-2022), the metadata stored in the mint itself. */
+const EXTENSION_TOKEN_METADATA = 19;
+
+/**
+ * The name and symbol of a Token-2022 mint's TokenMetadata extension (the metadata kept
+ * in the mint account itself), or null when the mint has none: a classic SPL Token mint
+ * (82 bytes), a Token-2022 mint without the extension, or metadata stored in another
+ * account (MetadataPointer elsewhere, Metaplex), which is not read. The extension's own
+ * `mint` field must be `mint`. Throws on a malformed extension.
+ *
+ * Layout: TLV entries `type: u16 LE, length: u16 LE, value` from byte 166; TokenMetadata
+ * is Borsh `update_authority [32], mint [32], name: string, symbol: string, uri: string,
+ * additional_metadata: Vec<(string, string)>` (strings: u32 LE length + UTF-8).
+ */
+export function decodeToken2022Metadata(data: Uint8Array, mint: PublicKey): { name: string; symbol: string } | null {
+  if (data.length <= TOKEN_2022_ACCOUNT_TYPE_OFFSET) return null;
+  if (data[TOKEN_2022_ACCOUNT_TYPE_OFFSET] !== TOKEN_2022_ACCOUNT_TYPE_MINT) return null;
+  const dv = new DataView(data.buffer, data.byteOffset, data.length);
+  let at = TOKEN_2022_ACCOUNT_TYPE_OFFSET + 1;
+  while (at + 4 <= data.length) {
+    const type = dv.getUint16(at, true);
+    const length = dv.getUint16(at + 2, true);
+    if (type === 0) return null; // Uninitialized: the rest is padding
+    const start = at + 4;
+    const end = start + length;
+    if (end > data.length) throw new RangeError("Token-2022 extension runs past the account");
+    if (type === EXTENSION_TOKEN_METADATA) {
+      const value = data.subarray(start, end);
+      if (value.length < 64) throw new RangeError("TokenMetadata too short");
+      if (!new PublicKey(value.subarray(32, 64)).equals(mint)) throw new RangeError("TokenMetadata names another mint");
+      const vv = new DataView(value.buffer, value.byteOffset, value.length);
+      let p = 64;
+      const str = (): string => {
+        if (p + 4 > value.length) throw new RangeError("TokenMetadata string runs past the extension");
+        const n = vv.getUint32(p, true);
+        if (p + 4 + n > value.length) throw new RangeError("TokenMetadata string runs past the extension");
+        const s = new TextDecoder("utf-8", { fatal: true }).decode(value.subarray(p + 4, p + 4 + n));
+        p += 4 + n;
+        return s;
+      };
+      const name = str();
+      const symbol = str();
+      return { name, symbol };
+    }
+    at = end;
+  }
+  return null;
+}

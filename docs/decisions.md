@@ -175,6 +175,25 @@ order.
   on the remote on 2026-11-16). This repo never applies migrations to the
   remote.
 
+- **`20261122120000_listing_metadata`** (site item 6): `listings.symbol`
+  and `listings.name`, nullable text, filled by both listing syncs from the
+  token's own on-chain metadata (the Token-2022 `TokenMetadata` extension of
+  a Solana mint, `symbol()` and `name()` of an EVM token). Never guessed and
+  never taken from the config files (whose `symbol` stays a review label,
+  printed next to the on-chain one when they differ). Checks: trimmed, no
+  control characters, 1–32 characters for the symbol and 1–128 for the
+  name; a published value outside them is stored as null and reported by
+  the sync. Display only: a symbol is not unique, the address is the
+  identity. Anon reads them through the existing table-level grant and row
+  policy. The order service requires it (it refuses to start, naming it,
+  until it is applied). **Ready for the founder to apply; not applied by
+  this repo.** After applying it, re-run both syncs with `--apply` to fill
+  the columns.
+- Solana metadata kept outside the mint (a `MetadataPointer` to another
+  account, or Metaplex) is not read, the same as the site's reader; such a
+  listing gets null symbol and name. Which devnet mints carry the extension
+  is not checked here (no chain access); the sync's dry run shows it.
+
 ## Order service (`src/service`)
 
 - **One Node process, one instance.** Hono HTTP API: `POST /v1/orders`

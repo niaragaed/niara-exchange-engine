@@ -64,6 +64,7 @@ interface Token {
   decimals: number;
   balances: Map<string, bigint>;
   allowances: Map<string, bigint>;
+  meta?: { symbol: string; name: string };
 }
 
 interface MinedTx {
@@ -133,8 +134,12 @@ export class MockEvmChain {
 
   constructor(chainId: number) {
     this.chainId = chainId;
-    for (const t of [T.usdt, T.brl, T.pathUsd]) this.addToken(t, 6);
-    for (const t of [T.equity, T.bond]) this.addToken(t, 18);
+    // Test token names, not the deployed tokens' metadata.
+    this.addToken(T.usdt, 6, { symbol: "mockUSDT", name: "Test Mock USDT" });
+    this.addToken(T.brl, 6, { symbol: "mockBRL", name: "Test Mock BRL" });
+    this.addToken(T.pathUsd, 6);
+    this.addToken(T.equity, 18, { symbol: "tEQTY", name: "Test Demo Equity" });
+    this.addToken(T.bond, 18, { symbol: "tBOND", name: "Test Demo Bond" });
     this.setListing(T.usdt, { assetClass: 3, status: 2 });
     this.setListing(T.brl, { assetClass: 3, status: 2 });
     this.setListing(T.equity, { assetClass: 0, status: 2, issuer: T.issuer, cashbackEligible: true, docHash: `0x${"ab".repeat(32)}` });
@@ -146,8 +151,9 @@ export class MockEvmChain {
     return custom({ request: ({ method, params }) => this.request(method, (params ?? []) as unknown[]) }, { retryCount: 0 });
   }
 
-  addToken(address: Address, decimals: number): void {
-    this.tokens.set(address.toLowerCase(), { decimals, balances: new Map(), allowances: new Map() });
+  /** Without `meta`, the token's symbol() and name() revert. */
+  addToken(address: Address, decimals: number, meta?: { symbol: string; name: string }): void {
+    this.tokens.set(address.toLowerCase(), { decimals, balances: new Map(), allowances: new Map(), ...(meta ? { meta } : {}) });
   }
 
   token(address: string): Token {
@@ -321,6 +327,7 @@ export class MockEvmChain {
     const token = this.tokens.get(to.toLowerCase());
     if (token) {
       if (fn === "decimals") return token.decimals;
+      if ((fn === "symbol" || fn === "name") && token.meta) return token.meta[fn];
       if (fn === "balanceOf") return token.balances.get(String(args[0]).toLowerCase()) ?? 0n;
       if (fn === "allowance") return token.allowances.get(key(String(args[0]), String(args[1]))) ?? 0n;
     }

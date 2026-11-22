@@ -349,17 +349,23 @@ export async function insertReversal(
 }
 
 /** Migrations the service writes through, each with what shows it is applied. */
-export const REQUIRED_MIGRATIONS = ["20261120120000_match_reversals", "20261120130000_cancel_reasons"] as const;
+export const REQUIRED_MIGRATIONS = [
+  "20261120120000_match_reversals",
+  "20261120130000_cancel_reasons",
+  "20261122120000_listing_metadata",
+] as const;
 
 /** The required migrations that are not applied yet (empty when the schema is ready). */
 export async function missingMigrations(tx: Queryable): Promise<string[]> {
-  const r = await tx.query<{ match_reversals: boolean; cancel_reasons: boolean }>(
+  const r = await tx.query<{ match_reversals: boolean; cancel_reasons: boolean; listing_metadata: boolean }>(
     `select to_regclass('public.match_reversals') is not null as match_reversals,
             exists (select 1 from information_schema.columns
-                     where table_schema = 'public' and table_name = 'orders' and column_name = 'cancel_reason') as cancel_reasons`,
+                     where table_schema = 'public' and table_name = 'orders' and column_name = 'cancel_reason') as cancel_reasons,
+            exists (select 1 from information_schema.columns
+                     where table_schema = 'public' and table_name = 'listings' and column_name = 'symbol') as listing_metadata`,
   );
   const row = r.rows[0];
-  return REQUIRED_MIGRATIONS.filter((m) => row?.[m.slice(15) as "match_reversals" | "cancel_reasons"] !== true);
+  return REQUIRED_MIGRATIONS.filter((m) => row?.[m.slice(15) as "match_reversals" | "cancel_reasons" | "listing_metadata"] !== true);
 }
 
 // ---------------------------------------------------------------------------

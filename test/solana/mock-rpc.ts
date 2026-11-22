@@ -174,6 +174,47 @@ export function mintData(decimals: number): Uint8Array {
   return d;
 }
 
+/**
+ * TEST ONLY: a Token-2022 mint with a MetadataPointer extension (type 18, pointing at
+ * itself) followed by its TokenMetadata extension (type 19), as spl-token-2022 lays them
+ * out: 82-byte base mint, padding to 165, account type 1 (mint), then TLV entries.
+ */
+export function token2022MintData(
+  decimals: number,
+  mint: PublicKey,
+  meta: { name: string; symbol: string; uri?: string; metadataMint?: PublicKey },
+): Uint8Array {
+  const base = new Uint8Array(166);
+  base[44] = decimals;
+  base[45] = 1;
+  base[165] = 1; // AccountType::Mint
+  const tlv = (type: number, value: Uint8Array) => {
+    const head = new Uint8Array(4);
+    new DataView(head.buffer).setUint16(0, type, true);
+    new DataView(head.buffer).setUint16(2, value.length, true);
+    return concat([head, value]);
+  };
+  const str = (v: string) => {
+    const bytes = new TextEncoder().encode(v);
+    const len = new Uint8Array(4);
+    new DataView(len.buffer).setUint32(0, bytes.length, true);
+    return concat([len, bytes]);
+  };
+  const pointer = tlv(18, concat([new Uint8Array(32), mint.toBytes()]));
+  const metadata = tlv(
+    19,
+    concat([
+      new Uint8Array(32), // update authority: none
+      (meta.metadataMint ?? mint).toBytes(),
+      str(meta.name),
+      str(meta.symbol),
+      str(meta.uri ?? ""),
+      new Uint8Array(4), // additional_metadata: empty vec
+    ]),
+  );
+  return concat([base, pointer, metadata]);
+}
+
 export function tokenAccountData(v: {
   mint: PublicKey;
   owner: PublicKey;

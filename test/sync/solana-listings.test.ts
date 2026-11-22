@@ -12,7 +12,7 @@ import {
   type MarketConfig,
 } from "../../src/sync/solana-listings.ts";
 import { resetData, startPglite, type TestDb } from "../db/pglite.ts";
-import { configData, listingData, mintData, mockRpc, type MockRpc } from "../solana/mock-rpc.ts";
+import { configData, listingData, mintData, mockRpc, token2022MintData, type MockRpc } from "../solana/mock-rpc.ts";
 
 // Generated per run: not devnet mints.
 const usdt = Keypair.generate().publicKey;
@@ -50,9 +50,11 @@ function chainState(): MockRpc {
   listing(bond, "FixedIncome", "Approved");
   listing(quoted, "Equity", "Quoted");
   listing(unreviewed, "Equity", "Approved");
-  for (const [mint, decimals] of [[usdt, 6], [equity, 0], [bond, 2], [quoted, 0], [unreviewed, 0]] as const) {
+  for (const [mint, decimals] of [[usdt, 6], [bond, 2], [quoted, 0], [unreviewed, 0]] as const) {
     r.set(mint, { owner: PROGRAM_ID, lamports: 1, data: mintData(decimals) });
   }
+  // A Token-2022 mint with its own TokenMetadata (test values); the others are classic mints without metadata.
+  r.set(equity, { owner: PROGRAM_ID, lamports: 1, data: token2022MintData(0, equity, { name: "Test Demo Equity", symbol: "tEQTY" }) });
   return r;
 }
 
@@ -98,10 +100,30 @@ describe("plan (read-only on-chain)", () => {
     expect(byAsset[equity.toBase58()]!.docHash).toBe("ab".repeat(32));
     expect(byAsset[usdt.toBase58()]).toMatchObject({ assetClass: "currency", issuer: null, docHash: null, cashbackEligible: false });
     expect(byAsset[bond.toBase58()]).toMatchObject({ assetClass: "fixed_income", assetDecimals: 2 });
+    // symbol and name from the mint's Token-2022 metadata; null for a mint without it.
+    expect(byAsset[equity.toBase58()]!.metadata).toEqual({ symbol: "tEQTY", name: "Test Demo Equity" });
+    expect(byAsset[usdt.toBase58()]!.metadata).toEqual({ symbol: null, name: null });
+    expect(plan.warnings).toEqual([]);
     expect(plan.statusOnly).toEqual([{ asset: quoted.toBase58(), status: "quoted" }]);
     expect(plan.skipped).toEqual([{ asset: unreviewed.toBase58(), reason: "no reviewed lot size in the config file" }]);
     // Read-only: nothing was simulated or sent.
     expect(rpc.calls.filter((c) => c === "send" || c === "simulate")).toEqual([]);
+  });
+
+  it("stores no metadata, with a warning, when the extension names another mint or holds unstorable text", async () => {
+    rpc.set(bond, { owner: PROGRAM_ID, lamports: 1, data: token2022MintData(2, bond, { name: "Bond", symbol: "B", metadataMint: usdt }) });
+    rpc.set(usdt, { owner: PROGRAM_ID, lamports: 1, data: token2022MintData(6, usdt, { name: "n".repeat(200), symbol: " TUSD " }) });
+    const plan = await planListingSync(rpc, config());
+    const byAsset = Object.fromEntries(plan.upserts.map((u) => [u.asset, u]));
+    expect(byAsset[bond.toBase58()]!.metadata).toEqual({ symbol: null, name: null });
+    expect(byAsset[usdt.toBase58()]!.metadata).toEqual({ symbol: "TUSD", name: null }); // trimmed; the name is too long
+    expect(plan.warnings).toHaveLength(2);
+    expect(plan.warnings).toEqual(
+      expect.arrayContaining([
+        expect.stringMatching(new RegExp(`^${bond.toBase58()}: Token-2022 metadata not read \\(TokenMetadata names another mint\\)`)),
+        expect.stringMatching(new RegExp(`^${usdt.toBase58()}: on-chain name not stored`)),
+      ]),
+    );
   });
 
   it("refuses a quote asset that is not the on-chain fee mint, and any cluster but devnet", async () => {
@@ -120,6 +142,11 @@ describe("apply (PGlite, real migrations)", () => {
       "select asset, asset_class::text, lot_size::text from public.listings order by asset",
     );
     expect(rows.rows.map((r) => r.asset).sort()).toEqual([usdt, equity, bond].map((k) => k.toBase58()).sort());
+    const meta = await t.pglite.query<{ symbol: string | null; name: string | null }>(
+      "select symbol, name from public.listings where asset = $1",
+      [equity.toBase58()],
+    );
+    expect(meta.rows[0]).toEqual({ symbol: "tEQTY", name: "Test Demo Equity" });
     const chain = await t.pglite.query<{ settlement_program: string; quote_asset: string }>(
       "select settlement_program, quote_asset from public.chains where id = 'solana-devnet'",
     );

@@ -8,6 +8,7 @@ import { NIARA_SETTLEMENT_ABI } from "../evm/abi/NiaraSettlement.ts";
 import type { EvmClient } from "../evm/client.ts";
 import { scanLogs } from "../evm/logs.ts";
 import type { DeployedEvmChain, EvmChainId } from "../evm/settings.ts";
+import { cleanMetadata } from "./metadata.ts";
 import { LotSizeChangeError, type ListingUpsert, type SyncResult } from "./solana-listings.ts";
 
 /**
@@ -22,7 +23,9 @@ import { LotSizeChangeError, type ListingUpsert, type SyncResult } from "./solan
  * Same rules as the Solana sync: Approved listings are upserted, never without a reviewed
  * lot size; a listing no longer Approved only gets its status updated if it is already
  * mirrored; a lot size never changes while the market has live orders. `tx_hash` is the
- * token's latest ListingApproved transaction.
+ * token's latest ListingApproved transaction. `symbol` and `name` are the token's own
+ * `symbol()` and `name()` (null if it reverts or publishes nothing storable); the config
+ * file's symbol is only a review label.
  */
 
 const EVENTS = ["ListingSubmitted", "ListingQuoted", "ListingApproved", "ListingSuspended", "ListingDelisted"] as const;
@@ -57,6 +60,8 @@ export interface EvmSyncPlan {
   upserts: (ListingUpsert & { txHash: string | null })[];
   statusOnly: { asset: string; status: ListingStatus }[];
   skipped: { asset: string; reason: string }[];
+  /** On-chain metadata that was published but not stored. */
+  warnings: string[];
 }
 
 /** Reads the chain (read-only) and computes what the sync would write. */
@@ -101,6 +106,7 @@ export async function planEvmListingSync(
     upserts: [],
     statusOnly: [],
     skipped: [],
+    warnings: [],
   };
   for (const token of [...tokens.keys()].sort()) {
     const l = await client.readContract({ address: s.contracts.listingRegistry, abi: LISTING_REGISTRY_ABI, functionName: "getListing", args: [token] });
@@ -120,10 +126,21 @@ export async function planEvmListingSync(
       continue;
     }
     const decimals = await client.readContract({ address: token, abi: NATIVE_ASSET_TOKEN_ABI, functionName: "decimals" });
+    const text = async (functionName: "symbol" | "name"): Promise<string | null> => {
+      try {
+        return await client.readContract({ address: token, abi: NATIVE_ASSET_TOKEN_ABI, functionName });
+      } catch (e) {
+        plan.warnings.push(`${token}: ${functionName}() not read (${(e as Error).message.split("\n")[0]})`);
+        return null;
+      }
+    };
+    const { metadata, warnings } = cleanMetadata({ symbol: await text("symbol"), name: await text("name") }, token);
+    plan.warnings.push(...warnings);
     const currency = assetClass === "currency";
     plan.upserts.push({
       asset: token,
       symbol: reviewed.symbol,
+      metadata,
       issuer: currency || isAddressEqual(l.issuer, zeroAddress) ? null : getAddress(l.issuer),
       assetClass,
       status: "approved",
@@ -160,14 +177,29 @@ export async function applyEvmListingSync(db: Database, plan: EvmSyncPlan): Prom
       const asset = row?.asset ?? u.asset; // keep the stored spelling (orders reference it)
       await tx.query(
         `insert into public.listings
-           (chain_id, asset, issuer, asset_class, status, cashback_eligible, doc_hash, asset_decimals, lot_size, tx_hash)
-         values ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)
+           (chain_id, asset, issuer, asset_class, status, cashback_eligible, doc_hash, asset_decimals, lot_size, tx_hash,
+            symbol, name)
+         values ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12)
          on conflict (chain_id, asset) do update set
            issuer = excluded.issuer, asset_class = excluded.asset_class, status = excluded.status,
            cashback_eligible = excluded.cashback_eligible, doc_hash = excluded.doc_hash,
            asset_decimals = excluded.asset_decimals, lot_size = excluded.lot_size,
-           tx_hash = coalesce(excluded.tx_hash, public.listings.tx_hash)`,
-        [plan.chain, asset, u.issuer, u.assetClass, u.status, u.cashbackEligible, u.docHash, u.assetDecimals, u.lotSize.toString(), u.txHash],
+           tx_hash = coalesce(excluded.tx_hash, public.listings.tx_hash),
+           symbol = excluded.symbol, name = excluded.name`,
+        [
+          plan.chain,
+          asset,
+          u.issuer,
+          u.assetClass,
+          u.status,
+          u.cashbackEligible,
+          u.docHash,
+          u.assetDecimals,
+          u.lotSize.toString(),
+          u.txHash,
+          u.metadata.symbol,
+          u.metadata.name,
+        ],
       );
       upserted += 1;
     }
