@@ -159,6 +159,24 @@ order's wallet delegates enough to the program's vault PDA and holds enough
 (sellers: the asset; buyers: USDT). An uncovered resting order is marked
 `stale`.
 
+### Browser test on devnet: funding a tester (`scripts/fund-tester.ts`)
+
+Sends a tester's own wallet devnet SOL, mockUSDT and tEQTY in ONE devnet transaction
+(simulated first): the demo funder sends the SOL and pays the fees and the rent of
+the tester's token accounts (created if missing); the demo "equity-seller" wallet
+sends the tokens. Keys stay in `~/.config/niara-exchange/devnet/` and are never
+printed. The address must be a wallet (on curve) and not one of the demo keys;
+amounts are capped (1 SOL, 10,000 mockUSDT, 100 tEQTY).
+
+```bash
+node --env-file=.env scripts/fund-tester.ts <address> --dry-run      # reads and simulates, sends nothing
+node --env-file=.env scripts/fund-tester.ts <address>                # 0.2 SOL, 1000 mockUSDT, 20 tEQTY
+node --env-file=.env scripts/fund-tester.ts <address> --sol 0.1 --usdt 500 --eqty 5
+```
+
+The demo funder needs the SOL sent plus 0.02 SOL (rent and fees): top it up from a
+devnet faucet if the script says so.
+
 ## EVM testnets
 
 `NiaraSettlement.settle` on Base Sepolia (84532), Robinhood Chain testnet
