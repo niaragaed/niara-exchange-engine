@@ -147,6 +147,11 @@ node --env-file=.env scripts/sync-evm-listings.ts --chain base-sepolia
 node --env-file=.env scripts/sync-evm-listings.ts --chain base-sepolia --apply
 ```
 
+Applied for `base-sepolia` on 2026-11-22 (chain marked reviewed by the founder): 4
+listings (tEQTY, tBOND, mockUSDT, mockBRL) from ListingRegistry events in blocks
+59342255 to 62135072, and the chain's settlement contract and mockUSDT set.
+Robinhood and Tempo are not reviewed or synced yet.
+
 ### End-to-end on Base Sepolia (`scripts/e2e-evm.ts`, not run yet)
 
 The same shape as the Solana run, with the demo investors of the niara-contracts

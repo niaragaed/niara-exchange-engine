@@ -4,7 +4,7 @@
     "base-sepolia": {
       "evmChainId": 84532,
       "deployed": true,
-      "reviewed": false,
+      "reviewed": true,
       "contracts": {
         "listingRegistry": "0x883081A2f4D1860aa92f03Cb3FE0f0aDcEc0C58f",
         "settlement": "0x14C6F9DeD6C97F67149B4305c57331F9d3820B6F",
