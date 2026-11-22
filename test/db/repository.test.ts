@@ -138,7 +138,7 @@ describe("configuration reads", () => {
     });
     expect(chains.find((c) => c.id === "solana-devnet")?.settlementProgram).toBeNull();
     expect(await asServiceRole(t.db, loadListings)).toEqual([
-      { chain: CHAIN, asset: ASSET, assetClass: "equity", status: "approved", lotSize: 100n },
+      { chain: CHAIN, asset: ASSET, assetClass: "equity", status: "approved", lotSize: 100n, assetDecimals: 6, symbol: null, name: null },
     ]);
   });
 });

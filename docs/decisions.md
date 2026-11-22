@@ -198,8 +198,11 @@ order.
 
 - **One Node process, one instance.** Hono HTTP API: `POST /v1/orders`
   (`{ intent, signature }`), `POST /v1/orders/cancel`
-  (`{ cancel, signature }`), `GET /v1/books/:chain/:asset`, `GET /health`.
-  Amounts are decimal strings in JSON.
+  (`{ cancel, signature }`), `GET /v1/orders?chain=&wallet=`,
+  `GET /v1/orders/:id`, `GET /v1/matches?chain=&wallet=`,
+  `GET /v1/matches/:id`, `GET /v1/trades/:chain/:asset`, `GET /v1/markets`,
+  `GET /v1/books/:chain/:asset`, `GET /health`. Amounts are decimal strings
+  in JSON.
 - **Single instance, enforced.** On start the service takes a session-level
   Postgres advisory lock (`pg_try_advisory_lock(hashtextextended(
   'niara-exchange-engine/order-service', 0))`) on its only database
@@ -279,6 +282,19 @@ order.
   same public data a block explorer shows. `since` (unix seconds) keeps
   trades matched at or after it. A matched but unsettled match is not a
   trade: it may still fail and be reversed.
+- **Markets** (`GET /v1/markets`, site items 7 and 8): every v1 chain, from
+  the service's catalog (as last read from `chains` and `listings`, re-read
+  every `MARKET_REFRESH_SECS`; no database read per request): its CAIP-2
+  id, settlement program, quote asset (with decimals, symbol and name when
+  it is listed), minimum notional, intent validity, `ordersAccepted`
+  (program and quote asset configured) and `settlementEnabled`, and its
+  markets (approved equity listings: asset, on-chain symbol and name,
+  decimals, lot size). `settlementEnabled` is derived from the worker: true
+  exactly for the chains the running worker holds an adapter for, i.e.
+  Solana devnet plus `EVM_SETTLEMENT_CHAINS` (each marked reviewed in
+  `config/evm-testnets.json`, which the service checks on start), and false
+  everywhere with `WORKER_ENABLED=off`. A chain with `ordersAccepted` but
+  not `settlementEnabled` matches orders whose matches stay `pending`.
 - **CORS** (for the Niara site, `niara-site/docs/engine-changes-needed.md`
   item 1). Only the exact origins in `CORS_ORIGINS` (comma-separated
   `scheme://host[:port]`; `http://localhost:3000` for now, the Vercel domain

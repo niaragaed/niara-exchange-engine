@@ -85,6 +85,10 @@ export interface ListingRow {
   assetClass: AssetClass;
   status: ListingStatus;
   lotSize: bigint;
+  assetDecimals: number;
+  /** On-chain token metadata (migration 20261122120000); null if the token publishes none. */
+  symbol: string | null;
+  name: string | null;
 }
 
 export async function loadListings(tx: Queryable): Promise<ListingRow[]> {
@@ -94,13 +98,22 @@ export async function loadListings(tx: Queryable): Promise<ListingRow[]> {
     asset_class: AssetClass;
     status: ListingStatus;
     lot_size: string;
-  }>(`select chain_id, asset, asset_class::text, status::text, lot_size::text from public.listings order by chain_id, asset`);
+    asset_decimals: number;
+    symbol: string | null;
+    name: string | null;
+  }>(
+    `select chain_id, asset, asset_class::text, status::text, lot_size::text, asset_decimals, symbol, name
+       from public.listings order by chain_id, asset`,
+  );
   return r.rows.map((l) => ({
     chain: l.chain_id,
     asset: l.asset,
     assetClass: l.asset_class,
     status: l.status,
     lotSize: BigInt(l.lot_size),
+    assetDecimals: Number(l.asset_decimals),
+    symbol: l.symbol,
+    name: l.name,
   }));
 }
 

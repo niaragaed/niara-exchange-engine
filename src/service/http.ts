@@ -11,6 +11,7 @@ import type { OrderService, Reply } from "./order-service.ts";
  *   POST /v1/orders/cancel   { cancel, signature }   cancel an order (signed, by nonce)
  *   GET  /v1/orders?chain=&wallet=[&limit=&before=]  a wallet's orders, newest first (unsigned: testnet only)
  *   GET  /v1/orders/:id                              one order's current state, with its matches
+ *   GET  /v1/markets                                 chains (settlement enabled?) and their approved equity markets
  *   GET  /v1/books/:chain/:asset                     public book (price levels only)
  *   GET  /v1/matches?chain=&wallet=[&limit=&before=] a wallet's matches with settlement status and tx hash (unsigned: testnet only)
  *   GET  /v1/matches/:id                             a match's settlement status and tx hash
@@ -79,6 +80,8 @@ export function createApp(
   app.get("/v1/orders", async (c) => send(c, await service.walletOrders(c.req.query())));
 
   app.get("/v1/orders/:id", async (c) => send(c, await service.orderStatus(c.req.param("id"))));
+
+  app.get("/v1/markets", (c) => send(c, service.markets()));
 
   app.get("/v1/books/:chain/:asset", async (c) => send(c, await service.book(c.req.param("chain"), c.req.param("asset"))));
 

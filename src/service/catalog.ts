@@ -14,9 +14,23 @@ import type { ChainConfig } from "../intents/verify.ts";
  * `orders` and `matches` reference `listings (chain_id, asset)` by foreign key and must
  * reuse it exactly.
  */
+/** A listing as `GET /v1/markets` shows it: canonical address, decimals, on-chain metadata. */
+export interface CatalogListing {
+  chain: ChainId;
+  asset: string;
+  assetClass: ListingRow["assetClass"];
+  status: ListingRow["status"];
+  lotSize: bigint;
+  assetDecimals: number;
+  symbol: string | null;
+  name: string | null;
+}
+
 export interface Catalog {
   chains: ReadonlyMap<ChainId, ChainConfig & { minOrderNotional: bigint }>;
   markets: readonly Market[];
+  /** Every listing that became a market, with its display fields, in the markets' order. */
+  listings: readonly CatalogListing[];
   /** The listing's stored spelling of a market asset (engine spelling in). */
   dbAsset(chain: ChainId, asset: string): string | undefined;
   /** Listings that could not become a market, with the reason (logged by the service). */
@@ -41,6 +55,7 @@ export function buildCatalog(chainRows: readonly ChainRow[], listings: readonly 
     });
   }
   const markets: Market[] = [];
+  const shown: CatalogListing[] = [];
   const stored = new Map<string, string>();
   const skipped: { chain: ChainId; asset: string; reason: string }[] = [];
   for (const l of listings) {
@@ -65,11 +80,22 @@ export function buildCatalog(chainRows: readonly ChainRow[], listings: readonly 
         lotSize: l.lotSize,
         minOrderNotional: chain.minOrderNotional,
       });
+      shown.push({
+        chain: l.chain,
+        asset,
+        assetClass: l.assetClass,
+        status: l.status,
+        lotSize: l.lotSize,
+        assetDecimals: l.assetDecimals,
+        symbol: l.symbol,
+        name: l.name,
+      });
     }
   }
   return {
     chains,
     markets,
+    listings: shown,
     dbAsset: (chain, asset) => stored.get(marketKey(chain, asset)),
     skipped,
   };

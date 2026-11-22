@@ -380,3 +380,95 @@ describe("GET /v1/trades/:chain/:asset (settled trades of a market)", () => {
     expect((await get(`/v1/trades/solana-devnet/${SOL_ASSET}?since=yesterday`)).body.error).toBe("invalid_since");
   });
 });
+
+describe("GET /v1/markets (chains and their markets)", () => {
+  const BOND = "TESTBondMint1111111111111111111111111111111";
+  const SUSPENDED = "0x00000000000000000000000000000000000E0002";
+
+  beforeEach(async () => {
+    // Test metadata, as the syncs would store it from the tokens.
+    await t.pglite.query(`update public.listings set symbol = 'tEQTY', name = 'Test Demo Equity' where asset = $1`, [SOL_ASSET]);
+    await t.pglite.query(
+      `insert into public.listings (chain_id, asset, issuer, asset_class, status, cashback_eligible, doc_hash, asset_decimals, lot_size, symbol, name)
+       values ('solana-devnet', $1, null, 'currency', 'approved', false, null, 6, 1, 'mockUSDT', 'Test Mock USDT'),
+              ('solana-devnet', $2, 'TEST-ISSUER', 'fixed_income', 'approved', true, repeat('ef', 32), 2, 1, 'tDEB', null),
+              ('base-sepolia', $3, 'TEST-ISSUER', 'equity', 'suspended', true, repeat('ef', 32), 18, 1, null, null)`,
+      [SOL_USDT, BOND, SUSPENDED],
+    );
+  });
+
+  async function start(settlementChains?: () => readonly ("solana-devnet" | "base-sepolia")[]) {
+    service = await OrderService.start({ ...deps(), ...(settlementChains ? { settlementChains } : {}) });
+    app = createApp(service, { maxBodyBytes: 4096 });
+  }
+
+  it("lists every v1 chain with its config, whether it settles, and its approved equity markets", async () => {
+    await start(() => ["solana-devnet", "base-sepolia"]);
+    const r = await get("/v1/markets");
+    expect(r.status).toBe(200);
+    expect(r.body.testnet).toBe(true);
+    expect(r.body.chains.map((c: { id: string }) => c.id)).toEqual([
+      "solana-devnet",
+      "base-sepolia",
+      "robinhood-testnet",
+      "hyperevm-testnet",
+      "tempo-testnet",
+    ]);
+    const [solana, base, robinhood] = r.body.chains;
+    expect(solana).toEqual({
+      id: "solana-devnet",
+      kind: "solana",
+      caip2: "solana:EtWTRABZaYq6iMfeYKouRu166VU2xqa1",
+      evmChainId: null,
+      settlementProgram: SOL_PROGRAM,
+      quoteAsset: { asset: SOL_USDT, assetDecimals: 6, symbol: "mockUSDT", name: "Test Mock USDT" },
+      minOrderNotional: "0",
+      maxIntentValiditySecs: 2592000,
+      ordersAccepted: true,
+      settlementEnabled: true,
+      // The currency and the fixed-income listing are not order book markets.
+      markets: [{ asset: SOL_ASSET, symbol: "tEQTY", name: "Test Demo Equity", assetDecimals: 6, lotSize: "1000000", status: "approved" }],
+    });
+    // EVM: checksummed addresses; a quote asset that is not listed has no metadata; a suspended market is left out.
+    expect(base).toMatchObject({
+      kind: "evm",
+      caip2: "eip155:84532",
+      evmChainId: 84532,
+      settlementProgram: EVM_SETTLEMENT,
+      quoteAsset: { asset: EVM_USDT, assetDecimals: null, symbol: null, name: null },
+      settlementEnabled: true,
+      markets: [{ asset: EVM_ASSET, symbol: null, name: null, assetDecimals: 18, lotSize: (10n ** 18n).toString(), status: "approved" }],
+    });
+    expect(robinhood).toMatchObject({
+      settlementProgram: null,
+      quoteAsset: null,
+      ordersAccepted: false,
+      settlementEnabled: false,
+      markets: [],
+    });
+  });
+
+  it("reports no chain as settling without a worker, and follows the worker's chains as they change", async () => {
+    await start();
+    expect((await get("/v1/markets")).body.chains.every((c: { settlementEnabled: boolean }) => !c.settlementEnabled)).toBe(true);
+    let chains: ("solana-devnet" | "base-sepolia")[] = [];
+    await start(() => chains);
+    chains = ["solana-devnet"];
+    const flags = (await get("/v1/markets")).body.chains.map((c: { id: string; settlementEnabled: boolean }) => [c.id, c.settlementEnabled]);
+    expect(Object.fromEntries(flags)).toEqual({
+      "solana-devnet": true,
+      "base-sepolia": false,
+      "robinhood-testnet": false,
+      "hyperevm-testnet": false,
+      "tempo-testnet": false,
+    });
+  });
+
+  it("shows new metadata after the market refresh", async () => {
+    await start();
+    await t.pglite.query(`update public.listings set symbol = 'tEQTY', name = 'Test Demo Equity' where lower(asset) = lower($1)`, [EVM_ASSET]);
+    expect((await get("/v1/markets")).body.chains[1].markets[0].symbol).toBeNull();
+    await service.refreshMarkets();
+    expect((await get("/v1/markets")).body.chains[1].markets[0]).toMatchObject({ symbol: "tEQTY", name: "Test Demo Equity" });
+  });
+});

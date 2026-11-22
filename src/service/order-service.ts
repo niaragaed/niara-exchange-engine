@@ -1,4 +1,4 @@
-import { CHAINS, isChainId, type ChainId } from "../chains.ts";
+import { CHAIN_IDS, CHAINS, isChainId, type ChainId } from "../chains.ts";
 import type { Database, Queryable } from "../db/database.ts";
 import {
   acquireInstanceLock,
@@ -66,6 +66,11 @@ export interface OrderServiceDeps {
   maxOpenOrdersPerWallet: number;
   /** On-chain delegate checks per chain (spec §3.5); a chain without one is not checked. */
   coverage?: Partial<Record<ChainId, CoverageChecker>>;
+  /**
+   * Chains the settlement worker settles on (it holds an adapter for them), for
+   * `GET /v1/markets`. Read on each request; none when absent.
+   */
+  settlementChains?: () => readonly ChainId[];
   /** Called once when the engine and the database may have diverged: stop the process. */
   onFatal: (err: unknown) => void;
   log?: (event: string, data?: Json) => void;
@@ -670,6 +675,56 @@ export class OrderService {
         next: rows.length === page.limit ? rows[rows.length - 1]!.seq : null,
       },
     };
+  }
+
+  /**
+   * The chains and their tradable markets, from the service's catalog (as last read from
+   * `chains` and `listings`): per chain its CAIP-2 id, settlement program, quote asset
+   * (with its decimals and on-chain metadata when listed), minimum notional, intent
+   * validity, whether orders are accepted (program and quote asset configured) and
+   * whether matches are settled (`settlementEnabled`: the worker runs with an adapter for
+   * the chain); per market (approved equity listings) its asset, decimals, lot size and
+   * on-chain symbol and name. No database read.
+   */
+  markets(): Reply {
+    const settling = new Set(this.deps.settlementChains?.() ?? []);
+    const chains = CHAIN_IDS.map((id) => {
+      const info = CHAINS[id];
+      const config = this.catalog.chains.get(id);
+      const listings = this.catalog.listings.filter((l) => l.chain === id);
+      const quote = config?.quoteAsset ? listings.find((l) => l.asset === config.quoteAsset) : undefined;
+      return {
+        id,
+        kind: info.kind,
+        caip2: info.caip2,
+        evmChainId: info.evmChainId,
+        settlementProgram: config?.settlementProgram ?? null,
+        quoteAsset:
+          config?.quoteAsset == null
+            ? null
+            : {
+                asset: config.quoteAsset,
+                assetDecimals: quote?.assetDecimals ?? null,
+                symbol: quote?.symbol ?? null,
+                name: quote?.name ?? null,
+              },
+        minOrderNotional: (config?.minOrderNotional ?? 0n).toString(),
+        maxIntentValiditySecs: config?.maxIntentValiditySecs ?? null,
+        ordersAccepted: config !== undefined && config.settlementProgram !== null && config.quoteAsset !== null,
+        settlementEnabled: settling.has(id),
+        markets: listings
+          .filter((l) => l.assetClass === "equity" && l.status === "approved")
+          .map((l) => ({
+            asset: l.asset,
+            symbol: l.symbol,
+            name: l.name,
+            assetDecimals: l.assetDecimals,
+            lotSize: l.lotSize.toString(),
+            status: l.status,
+          })),
+      };
+    });
+    return { status: 200, body: { testnet: true, chains } };
   }
 
   /** Takes every order that is no longer matchable out of the books and stores it expired. */

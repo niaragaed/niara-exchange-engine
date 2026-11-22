@@ -74,9 +74,12 @@ async function main(): Promise<void> {
     log("delegate_check_disabled", { notice: "orders are matched without on-chain delegate checks" });
   }
 
+  // The chains the worker holds an adapter for, set once the worker is built (GET /v1/markets).
+  let settlementChains: ChainId[] = [];
   let service: OrderService;
   try {
     service = await OrderService.start({
+      settlementChains: () => settlementChains,
       db,
       clock: () => Math.floor(Date.now() / 1000),
       newOrderId: randomUUID,
@@ -127,6 +130,7 @@ async function main(): Promise<void> {
         log("worker_starting", { chain: e.chain.chain, operator: evmOperator.address });
       }
     }
+    settlementChains = Object.keys(adapters) as ChainId[];
     worker = new SettlementWorker({
       db,
       adapters,
