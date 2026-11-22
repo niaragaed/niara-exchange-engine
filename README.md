@@ -196,6 +196,33 @@ node --env-file=.env scripts/counter-order.ts --side buy  --price 24 --quantity 
 Prices are mockUSDT per share, quantities whole shares (tEQTY's lot is one share). The
 order expires after `--expires-hours` (default 24); the status URL is printed.
 
+### Browser test on devnet: the site's `.env.local` and the order of steps
+
+The site (`niara-site`) enables ordering on solana-devnet when its chain config is
+complete and `GET /v1/markets` reports `ordersAccepted` (and `settlementEnabled` for
+the fills to settle). Its `.env.local` for this test (all public values):
+
+```bash
+NEXT_PUBLIC_ENGINE_URL=http://localhost:8787
+NEXT_PUBLIC_SOLANA_DEVNET_RPC_URL=https://api.devnet.solana.com
+NEXT_PUBLIC_SOLANA_DEVNET_PROGRAM_ID=B311xH3PcEx86gdRbuinrGrh1r9G2qzjDCji8uc6eD9v
+NEXT_PUBLIC_SOLANA_DEVNET_USDT_MINT=8iWQ7VxYrkUv471vEoZ664eLwDzWinPiCJpRvcTUA24y
+NEXT_PUBLIC_SOLANA_DEVNET_EXPLORER_TX=https://explorer.solana.com/tx/{tx}?cluster=devnet
+NEXT_PUBLIC_SUPABASE_URL=...        # the niara-exchange-dev project URL
+NEXT_PUBLIC_SUPABASE_ANON_KEY=...   # its anon key (public by design, RLS)
+```
+
+Open the site at exactly `http://localhost:3000` (the origin in `CORS_ORIGINS`;
+`http://127.0.0.1:3000` is another origin and is refused). Restart `next dev` after
+editing `.env.local`: `NEXT_PUBLIC_*` values are inlined at build time.
+
+1. `scripts/fund-tester.ts <your devnet wallet>` (dry run first).
+2. Start the service with its worker (above) and check `/v1/markets`.
+3. `scripts/counter-order.ts --side sell --price 25 --quantity 5`, then buy from it on
+   the site (the site asks the wallet to approve the exact mockUSDT and to sign the
+   intent); or `--side buy` and sell into it.
+4. The worker settles the match; the site shows the transaction on Solana Explorer.
+
 ## EVM testnets
 
 `NiaraSettlement.settle` on Base Sepolia (84532), Robinhood Chain testnet
