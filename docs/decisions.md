@@ -252,6 +252,14 @@ order.
   fill that happened after the site's tab closed still shows its explorer
   link. No counterparty wallet. Unsigned on testnet, sign-in on mainnet (as
   the orders above).
+- **Trades of a market** (`GET /v1/trades/:chain/:asset?limit=&before=&since=`,
+  site item 5): matches confirmed on-chain only (match `settled`, settlement
+  `confirmed`), newest first, pages of 100 (at most 500); each with
+  `matchedAt` (the trade time, for candles), `settledAt`, price, quantity,
+  payment amount, taker side and tx hash. No wallets and no order ids: the
+  same public data a block explorer shows. `since` (unix seconds) keeps
+  trades matched at or after it. A matched but unsettled match is not a
+  trade: it may still fail and be reversed.
 - **CORS** (for the Niara site, `niara-site/docs/engine-changes-needed.md`
   item 1). Only the exact origins in `CORS_ORIGINS` (comma-separated
   `scheme://host[:port]`; `http://localhost:3000` for now, the Vercel domain

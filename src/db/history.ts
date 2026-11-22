@@ -169,3 +169,67 @@ export async function listWalletMatches(tx: Queryable, chain: ChainId, wallet: s
   );
   return r.rows.map(toMatchHistory);
 }
+
+export interface TradeRow {
+  id: string;
+  seq: number;
+  quantity: bigint;
+  lotSize: bigint;
+  price: bigint;
+  paymentAmount: bigint;
+  takerSide: "buy" | "sell";
+  matchedAt: string;
+  settledAt: string;
+  txHash: string;
+}
+
+/**
+ * Settled matches of one market (confirmed on-chain), newest first: public trade data
+ * only (no wallets, no order ids). `asset` as stored (the listing's spelling);
+ * `sinceSecs` keeps trades matched at or after that unix time.
+ */
+export async function listTrades(
+  tx: Queryable,
+  chain: ChainId,
+  asset: string,
+  page: Page,
+  sinceSecs: number | null,
+): Promise<TradeRow[]> {
+  const r = await tx.query<{
+    id: string;
+    seq: string;
+    quantity: string;
+    lot_size: string;
+    price: string;
+    payment_amount: string;
+    taker_side: "buy" | "sell";
+    matched_at: string;
+    settled_at: string;
+    tx_hash: string;
+  }>(
+    `select m.id::text, m.seq::text, m.quantity::text, m.lot_size::text, m.price::text, m.payment_amount::text,
+            (case when m.maker_order = m.buy_order then 'sell' else 'buy' end) as taker_side,
+            (extract(epoch from m.created_at) * 1000)::bigint::text as matched_at,
+            (extract(epoch from st.updated_at) * 1000)::bigint::text as settled_at, st.tx_hash
+       from public.matches m
+       join public.settlements st on st.match_id = m.id and st.status = 'confirmed'
+      where m.chain_id = $1 and m.asset = $2 and m.status = 'settled'
+        and ($3::bigint is null or m.seq < $3::bigint)
+        and ($4::bigint is null or m.created_at >= to_timestamp($4::bigint))
+      order by m.seq desc
+      limit $5`,
+    [chain, asset, page.before, sinceSecs, page.limit],
+  );
+  return r.rows.map((t) => ({
+    id: t.id,
+    seq: Number(t.seq),
+    quantity: BigInt(t.quantity),
+    lotSize: BigInt(t.lot_size),
+    price: BigInt(t.price),
+    paymentAmount: BigInt(t.payment_amount),
+    takerSide: t.taker_side,
+    matchedAt: isoFromMs(t.matched_at),
+    settledAt: isoFromMs(t.settled_at),
+    txHash: t.tx_hash,
+  }));
+}

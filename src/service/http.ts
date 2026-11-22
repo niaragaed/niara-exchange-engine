@@ -14,6 +14,7 @@ import type { OrderService, Reply } from "./order-service.ts";
  *   GET  /v1/books/:chain/:asset                     public book (price levels only)
  *   GET  /v1/matches?chain=&wallet=[&limit=&before=] a wallet's matches with settlement status and tx hash (unsigned: testnet only)
  *   GET  /v1/matches/:id                             a match's settlement status and tx hash
+ *   GET  /v1/trades/:chain/:asset[?limit=&before=&since=]  settled trades of a market (no wallets)
  *   GET  /health
  *
  * Bodies above `maxBodyBytes` are refused with 413 before they are parsed.
@@ -80,6 +81,10 @@ export function createApp(
   app.get("/v1/orders/:id", async (c) => send(c, await service.orderStatus(c.req.param("id"))));
 
   app.get("/v1/books/:chain/:asset", async (c) => send(c, await service.book(c.req.param("chain"), c.req.param("asset"))));
+
+  app.get("/v1/trades/:chain/:asset", async (c) =>
+    send(c, await service.trades(c.req.param("chain"), c.req.param("asset"), c.req.query())),
+  );
 
   app.get("/v1/matches", async (c) => send(c, await service.walletMatches(c.req.query())));
 

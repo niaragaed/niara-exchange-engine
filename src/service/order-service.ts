@@ -20,6 +20,7 @@ import { loadSettlement } from "../db/settlements.ts";
 import {
   listOrderMatches,
   listWalletMatches,
+  listTrades,
   listWalletOrders,
   loadStoredOrder,
   type MatchHistoryRow,
@@ -629,6 +630,46 @@ export class OrderService {
       return { matchId: m.id, side, role: orderId === m.makerOrderId ? "maker" : "taker", orderId, ...matchHistoryJson(m) };
     });
     return { status: 200, body: { chain: who.chain, wallet: who.wallet, matches, next: nextCursor(rows, page) } };
+  }
+
+  /**
+   * Settled trades of one market, newest first (`?limit=&before=&since=`), for the trade
+   * history and candles: time, price, quantity, taker side, tx hash. Only matches
+   * confirmed on-chain; no wallets, no order ids. Pages of up to 500; `since` (unix
+   * seconds) keeps trades matched at or after it.
+   */
+  async trades(chainParam: string, assetParam: string, query: Readonly<Record<string, string | undefined>>): Promise<Reply> {
+    if (!isChainId(chainParam)) return error(404, "unknown_chain");
+    const chain: ChainId = chainParam;
+    const asset = canonicalAddress(chain, assetParam);
+    const stored = asset === null ? undefined : this.catalog.dbAsset(chain, asset);
+    if (asset === null || stored === undefined) return error(404, "unknown_market");
+    const page = parsePage(query, 500);
+    if ("status" in page) return page;
+    const sinceRaw = query["since"];
+    if (sinceRaw !== undefined && !/^[0-9]{1,12}$/.test(sinceRaw)) return error(400, "invalid_since", "since must be unix seconds");
+    const since = sinceRaw === undefined ? null : Number(sinceRaw);
+    const rows = await asServiceRole(this.deps.db, (tx) => listTrades(tx, chain, stored, page, since));
+    return {
+      status: 200,
+      body: {
+        chain,
+        asset,
+        trades: rows.map((t) => ({
+          matchId: t.id,
+          sequence: t.seq,
+          price: t.price.toString(),
+          quantity: t.quantity.toString(),
+          lotSize: t.lotSize.toString(),
+          paymentAmount: t.paymentAmount.toString(),
+          takerSide: t.takerSide,
+          matchedAt: t.matchedAt,
+          settledAt: t.settledAt,
+          txHash: t.txHash,
+        })),
+        next: rows.length === page.limit ? rows[rows.length - 1]!.seq : null,
+      },
+    };
   }
 
   /** Takes every order that is no longer matchable out of the books and stores it expired. */

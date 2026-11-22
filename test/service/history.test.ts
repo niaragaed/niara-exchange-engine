@@ -323,3 +323,60 @@ describe("GET /v1/matches?chain=&wallet= (a wallet's matches)", () => {
     expect((await get(`/v1/matches?chain=solana-devnet&wallet=${alice.wallet}&limit=x`)).body.error).toBe("invalid_limit");
   });
 });
+
+describe("GET /v1/trades/:chain/:asset (settled trades of a market)", () => {
+  it("lists only trades confirmed on-chain, newest first, with time, price, quantity and tx hash, and no wallets", async () => {
+    await submit(alice, sol(alice, { side: "sell", quantity: 3n * SOL_LOT }));
+    const t1 = (await submit(bob, sol(bob, { side: "buy", quantity: SOL_LOT }))).body.matches[0];
+    const t2 = (await submit(carol, sol(carol, { side: "buy", quantity: 2n * SOL_LOT }))).body.matches[0];
+    await submit(bob, sol(bob, { side: "buy", quantity: SOL_LOT, limitPrice: 24_000_000n }));
+    const t3 = (await submit(carol, sol(carol, { side: "sell", quantity: SOL_LOT, limitPrice: 24_000_000n }))).body.matches[0];
+    await settle(t1.id, TEST_TX(1));
+    await settle(t3.id, TEST_TX(3));
+    // t2 is matched but not settled: not a trade yet.
+
+    const r = await get(`/v1/trades/solana-devnet/${SOL_ASSET}`);
+    expect(r.status).toBe(200);
+    expect(r.body).toMatchObject({ chain: "solana-devnet", asset: SOL_ASSET, next: null });
+    expect(r.body.trades.map((x: { matchId: string }) => x.matchId)).toEqual([t3.id, t1.id]);
+    expect(r.body.trades[0]).toMatchObject({ price: "24000000", quantity: "1000000", takerSide: "sell", txHash: TEST_TX(3) });
+    expect(r.body.trades[1]).toMatchObject({
+      price: "25000000",
+      quantity: "1000000",
+      lotSize: "1000000",
+      paymentAmount: "25000000",
+      takerSide: "buy",
+      txHash: TEST_TX(1),
+    });
+    for (const x of r.body.trades) {
+      expect(Date.parse(x.matchedAt)).not.toBeNaN();
+      expect(Date.parse(x.settledAt)).toBeGreaterThanOrEqual(Date.parse(x.matchedAt));
+    }
+    expect(r.body.trades.some((x: { matchId: string }) => x.matchId === t2.id)).toBe(false);
+    const text = JSON.stringify(r.body);
+    for (const w of [alice.wallet, bob.wallet, carol.wallet]) expect(text).not.toContain(w);
+    expect(text).not.toMatch(/OrderId|orderId/);
+
+    // Paging, and since (unix seconds of the match time).
+    const p1 = await get(`/v1/trades/solana-devnet/${SOL_ASSET}?limit=1`);
+    expect(p1.body.next).toBe(p1.body.trades[0].sequence);
+    const p2 = await get(`/v1/trades/solana-devnet/${SOL_ASSET}?limit=1&before=${p1.body.next}`);
+    expect(p2.body.trades[0].matchId).toBe(t1.id);
+    expect((await get(`/v1/trades/solana-devnet/${SOL_ASSET}?since=${clock() + 3600}`)).body.trades).toEqual([]);
+    expect((await get(`/v1/trades/solana-devnet/${SOL_ASSET}?since=${clock() - 3600}`)).body.trades).toHaveLength(2);
+  });
+
+  it("finds an EVM market in any spelling, and refuses unknown markets and bad parameters", async () => {
+    await submit(evmA, evmIntent(evmA.wallet, { nonce: nonce(), expiresAt: clock() + DAY }));
+    const m = (await submit(evmB, evmIntent(evmB.wallet, { nonce: nonce(), expiresAt: clock() + DAY, side: "buy" }))).body.matches[0];
+    await settle(m.id, TEST_TX(9));
+    const r = await get(`/v1/trades/base-sepolia/${EVM_ASSET.toLowerCase()}`);
+    expect(r.body.asset).toBe(EVM_ASSET);
+    expect(r.body.trades).toEqual([expect.objectContaining({ matchId: m.id, txHash: TEST_TX(9) })]);
+    expect((await get(`/v1/trades/solana-devnet/${EVM_ASSET}`)).body.error).toBe("unknown_market");
+    expect((await get(`/v1/trades/ethereum/${EVM_ASSET}`)).body.error).toBe("unknown_chain");
+    expect((await get(`/v1/trades/solana-devnet/${SOL_ASSET}?limit=501`)).body.error).toBe("invalid_limit");
+    expect((await get(`/v1/trades/solana-devnet/${SOL_ASSET}?limit=500`)).status).toBe(200);
+    expect((await get(`/v1/trades/solana-devnet/${SOL_ASSET}?since=yesterday`)).body.error).toBe("invalid_since");
+  });
+});
