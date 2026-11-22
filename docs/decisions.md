@@ -244,6 +244,14 @@ order.
   error, `settledAt` once confirmed). Matches carry order ids, never wallets.
   Public by id: order ids are random UUID v4s handed to the wallet at
   placement.
+- **A wallet's matches** (`GET /v1/matches?chain=&wallet=&limit=&before=`,
+  site item 4): the matches where the wallet bought or sold, newest first,
+  paged like the orders; each with the wallet's `side`, `role` (maker or
+  taker) and `orderId`, the match terms, and the settlement with the same
+  fields as `GET /v1/matches/:id` (status, attempts, tx hash, error), so a
+  fill that happened after the site's tab closed still shows its explorer
+  link. No counterparty wallet. Unsigned on testnet, sign-in on mainnet (as
+  the orders above).
 - **CORS** (for the Niara site, `niara-site/docs/engine-changes-needed.md`
   item 1). Only the exact origins in `CORS_ORIGINS` (comma-separated
   `scheme://host[:port]`; `http://localhost:3000` for now, the Vercel domain

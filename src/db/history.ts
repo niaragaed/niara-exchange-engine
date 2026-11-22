@@ -157,3 +157,15 @@ export async function listOrderMatches(tx: Queryable, orderId: string): Promise<
   );
   return r.rows.map(toMatchHistory);
 }
+
+/** Matches where `wallet` is the buyer or the seller on `chain`, newest first. */
+export async function listWalletMatches(tx: Queryable, chain: ChainId, wallet: string, page: Page): Promise<MatchHistoryRow[]> {
+  const r = await tx.query<RawMatch>(
+    `${MATCH_SELECT}
+      where m.chain_id = $1 and (b.wallet = $2 or s.wallet = $2) and ($3::bigint is null or m.seq < $3::bigint)
+      order by m.seq desc
+      limit $4`,
+    [chain, wallet, page.before, page.limit],
+  );
+  return r.rows.map(toMatchHistory);
+}

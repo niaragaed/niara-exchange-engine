@@ -19,6 +19,7 @@ import { admitOrderIntent } from "../intents/verify.ts";
 import { loadSettlement } from "../db/settlements.ts";
 import {
   listOrderMatches,
+  listWalletMatches,
   listWalletOrders,
   loadStoredOrder,
   type MatchHistoryRow,
@@ -608,6 +609,26 @@ export class OrderService {
         matches: found.matches.map(matchHistoryJson),
       },
     };
+  }
+
+  /**
+   * A wallet's matches on one chain, newest first (`?chain=&wallet=&limit=&before=`), each
+   * with the wallet's side, role and order, and the settlement as `GET /v1/matches/:id`
+   * reports it (status, attempts, tx hash, error). No counterparty wallet. TESTNET:
+   * unsigned, like `walletOrders`.
+   */
+  async walletMatches(query: Readonly<Record<string, string | undefined>>): Promise<Reply> {
+    const who = chainAndWallet(query);
+    if ("status" in who) return who;
+    const page = parsePage(query);
+    if ("status" in page) return page;
+    const rows = await asServiceRole(this.deps.db, (tx) => listWalletMatches(tx, who.chain, who.wallet, page));
+    const matches = rows.map((m) => {
+      const side = m.buyer === who.wallet ? "buy" : "sell";
+      const orderId = side === "buy" ? m.buyOrderId : m.sellOrderId;
+      return { matchId: m.id, side, role: orderId === m.makerOrderId ? "maker" : "taker", orderId, ...matchHistoryJson(m) };
+    });
+    return { status: 200, body: { chain: who.chain, wallet: who.wallet, matches, next: nextCursor(rows, page) } };
   }
 
   /** Takes every order that is no longer matchable out of the books and stores it expired. */

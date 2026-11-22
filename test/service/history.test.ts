@@ -41,6 +41,7 @@ let alice: SolanaSigner;
 let bob: SolanaSigner;
 let carol: SolanaSigner;
 let evmA: EvmSigner;
+let evmB: EvmSigner;
 
 const clock = () => Math.floor(Date.now() / 1000);
 const nonce = () => randomBytes(16).toString("hex");
@@ -97,6 +98,7 @@ beforeAll(async () => {
   bob = await solanaSigner();
   carol = await solanaSigner();
   evmA = evmSigner();
+  evmB = evmSigner();
 });
 
 afterAll(async () => {
@@ -256,5 +258,68 @@ describe("GET /v1/orders/:id (one order's current state)", () => {
     expect((await get(`/v1/orders/${randomUUID()}`)).body.error).toBe("unknown_order");
     expect((await get("/v1/orders/not-a-uuid")).status).toBe(404);
     expect((await get("/v1/orders/cancel")).status).toBe(404);
+  });
+});
+
+describe("GET /v1/matches?chain=&wallet= (a wallet's matches)", () => {
+  it("lists the wallet's matches on both sides, newest first, with its side, role, order and settlement", async () => {
+    const sell = (await submit(alice, sol(alice, { side: "sell", quantity: 2n * SOL_LOT }))).body.order;
+    const buy1 = (await submit(bob, sol(bob, { side: "buy", quantity: SOL_LOT }))).body;
+    const rest = (await submit(alice, sol(alice, { side: "buy", quantity: SOL_LOT, limitPrice: 20_000_000n }))).body.order;
+    // A fill that happens later, by another taker (the wallet's tab may be closed).
+    const carolSell = (await submit(carol, sol(carol, { side: "sell", quantity: SOL_LOT, limitPrice: 20_000_000n }))).body;
+    await settle(buy1.matches[0].id, TEST_TX(7));
+
+    const r = await get(`/v1/matches?chain=solana-devnet&wallet=${alice.wallet}`);
+    expect(r.status).toBe(200);
+    expect(r.body.next).toBeNull();
+    expect(r.body.matches).toHaveLength(2);
+    expect(r.body.matches[0]).toMatchObject({
+      matchId: carolSell.matches[0].id,
+      id: carolSell.matches[0].id,
+      side: "buy",
+      role: "maker",
+      orderId: rest.id,
+      price: "20000000",
+      status: "pending",
+      settlement: null,
+    });
+    expect(r.body.matches[1]).toMatchObject({
+      matchId: buy1.matches[0].id,
+      side: "sell",
+      role: "maker",
+      orderId: sell.id,
+      quantity: "1000000",
+      paymentAmount: "25000000",
+      status: "settled",
+      settlement: { status: "confirmed", attempts: 1, txHash: TEST_TX(7), error: null },
+    });
+    // The same settlement fields as GET /v1/matches/:id.
+    const one = await get(`/v1/matches/${buy1.matches[0].id}`);
+    expect(one.body.settlement).toEqual({ status: "confirmed", attempts: 1, txHash: TEST_TX(7), error: null });
+    // The counterparty's view: taker, and no wallet of alice's in either.
+    const bobs = await get(`/v1/matches?chain=solana-devnet&wallet=${bob.wallet}`);
+    expect(bobs.body.matches).toEqual([expect.objectContaining({ side: "buy", role: "taker", orderId: buy1.order.id })]);
+    expect(JSON.stringify(bobs.body)).not.toContain(alice.wallet);
+    expect(JSON.stringify(r.body.matches)).not.toContain(bob.wallet);
+  });
+
+  it("pages, keeps chains apart, and checks its parameters", async () => {
+    for (let i = 0; i < 3; i++) {
+      await submit(alice, sol(alice, { side: "sell" }));
+      await submit(bob, sol(bob, { side: "buy" }));
+    }
+    const p1 = await get(`/v1/matches?chain=solana-devnet&wallet=${alice.wallet}&limit=2`);
+    expect(p1.body.matches).toHaveLength(2);
+    const p2 = await get(`/v1/matches?chain=solana-devnet&wallet=${alice.wallet}&limit=2&before=${p1.body.next}`);
+    expect(p2.body.matches).toHaveLength(1);
+    expect(p2.body.next).toBeNull();
+
+    await submit(evmA, evmIntent(evmA.wallet, { nonce: nonce(), expiresAt: clock() + DAY }));
+    await submit(evmB, evmIntent(evmB.wallet, { nonce: nonce(), expiresAt: clock() + DAY, side: "buy" }));
+    const evm = await get(`/v1/matches?chain=base-sepolia&wallet=${evmB.wallet.toLowerCase()}`);
+    expect(evm.body.matches).toEqual([expect.objectContaining({ side: "buy", asset: EVM_ASSET, paymentAsset: EVM_USDT })]);
+    expect((await get(`/v1/matches?chain=base-sepolia&wallet=${alice.wallet}`)).body.error).toBe("invalid_wallet");
+    expect((await get(`/v1/matches?chain=solana-devnet&wallet=${alice.wallet}&limit=x`)).body.error).toBe("invalid_limit");
   });
 });
