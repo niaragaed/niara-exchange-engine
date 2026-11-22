@@ -177,6 +177,25 @@ node --env-file=.env scripts/fund-tester.ts <address> --sol 0.1 --usdt 500 --eqt
 The demo funder needs the SOL sent plus 0.02 SOL (rent and fees): top it up from a
 devnet faucet if the script says so.
 
+### Browser test on devnet: a resting order to trade against (`scripts/counter-order.ts`)
+
+With the service running, places ONE resting tEQTY order from a demo investor wallet
+("equity-seller" by default; `--wallet equity-buyer` for the other). One devnet
+transaction first (fees paid by the demo funder, simulated first): the wallet approves
+EXACTLY what the order needs to the program's vault PDA (a sell: the tEQTY; a buy:
+quantity x price in mockUSDT). Then it signs the intent and submits it. `approve`
+replaces a token account's delegation, so the script refuses while the wallet has
+another live order on the same side (it would shrink that order's delegation).
+
+```bash
+node --env-file=.env scripts/counter-order.ts --side sell --price 25 --quantity 5 --dry-run   # simulates the approve; sends and submits nothing
+node --env-file=.env scripts/counter-order.ts --side sell --price 25 --quantity 5             # the tester buys from it on the site
+node --env-file=.env scripts/counter-order.ts --side buy  --price 24 --quantity 3             # the tester sells into it
+```
+
+Prices are mockUSDT per share, quantities whole shares (tEQTY's lot is one share). The
+order expires after `--expires-hours` (default 24); the status URL is printed.
+
 ## EVM testnets
 
 `NiaraSettlement.settle` on Base Sepolia (84532), Robinhood Chain testnet
