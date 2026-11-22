@@ -149,12 +149,12 @@ export interface OrderClosing {
   signature?: string;
 }
 
-const ORDER_COLUMNS = `id::text, seq::text, chain_id, asset, side::text, quantity::text, lot_size::text,
+export const ORDER_COLUMNS = `id::text, seq::text, chain_id, asset, side::text, quantity::text, lot_size::text,
   limit_price::text, payment_asset, wallet, nonce, extract(epoch from expires_at)::bigint::text as expires_at,
   intent_version, intent_signature, filled_quantity::text, settled_quantity::text, released_quantity::text,
   voided_quantity::text, status::text, cancel_reason::text, cancel_signature`;
 
-interface RawOrder {
+export interface RawOrder {
   id: string;
   seq: string;
   chain_id: ChainId;
@@ -178,7 +178,7 @@ interface RawOrder {
   cancel_signature: string | null;
 }
 
-function toOrderRow(o: RawOrder): OrderRow {
+export function toOrderRow(o: RawOrder): OrderRow {
   return {
     id: o.id,
     seq: Number(o.seq),

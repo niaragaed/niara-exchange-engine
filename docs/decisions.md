@@ -222,6 +222,21 @@ order.
   orders rest is refused and logged.
 - **Settlement** is the worker's (below), in the same process; with
   `WORKER_ENABLED=off`, matches stay `pending`.
+- **A wallet's orders** (`GET /v1/orders?chain=&wallet=&limit=&before=`,
+  site item 2): every status, newest first by `seq`, pages of 50 (at most
+  100; `before` is the previous page's last `seq`, `next` is null on the last
+  page). Each order carries its nonce (what a signed cancellation names),
+  `cancelReason`, the failed-match counters and `createdAt`; never the intent
+  or cancellation signature. The wallet is matched in its canonical spelling
+  (checksummed on EVM).
+  **Unsigned, testnet only.** Anyone can list any wallet's orders by
+  address. On testnet that is accepted: nothing of value is at stake, and a
+  settled trade's wallets and amounts are public on-chain anyway. **A mainnet deployment must require the
+  wallet's sign-in** (a short-lived, wallet-signed read token) for this
+  endpoint and for `GET /v1/matches?chain=&wallet=`: a wallet's resting
+  orders, limit prices, expiries and nonces, tied to its address, show what
+  it is about to trade and help front-run it, which the public book (price
+  levels only, no wallets) does not.
 - **CORS** (for the Niara site, `niara-site/docs/engine-changes-needed.md`
   item 1). Only the exact origins in `CORS_ORIGINS` (comma-separated
   `scheme://host[:port]`; `http://localhost:3000` for now, the Vercel domain

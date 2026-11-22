@@ -9,6 +9,7 @@ import type { OrderService, Reply } from "./order-service.ts";
  *
  *   POST /v1/orders          { intent, signature }   submit a signed order intent
  *   POST /v1/orders/cancel   { cancel, signature }   cancel an order (signed, by nonce)
+ *   GET  /v1/orders?chain=&wallet=[&limit=&before=]  a wallet's orders, newest first (unsigned: testnet only)
  *   GET  /v1/books/:chain/:asset                     public book (price levels only)
  *   GET  /v1/matches/:id                             a match's settlement status and tx hash
  *   GET  /health
@@ -71,6 +72,8 @@ export function createApp(
     if (!parsed.ok) return c.json({ error: "malformed_json" }, 400);
     return send(c, await service.cancelOrder(parsed.body));
   });
+
+  app.get("/v1/orders", async (c) => send(c, await service.walletOrders(c.req.query())));
 
   app.get("/v1/books/:chain/:asset", async (c) => send(c, await service.book(c.req.param("chain"), c.req.param("asset"))));
 

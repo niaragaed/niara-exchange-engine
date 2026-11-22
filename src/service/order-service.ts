@@ -1,4 +1,4 @@
-import { isChainId, type ChainId } from "../chains.ts";
+import { CHAINS, isChainId, type ChainId } from "../chains.ts";
 import type { Database, Queryable } from "../db/database.ts";
 import {
   acquireInstanceLock,
@@ -14,9 +14,10 @@ import type { CancelReason, EngineEvent, MatchFault, MatchingEngine, OrderView }
 import type { Match, OrderInput } from "../engine/types.ts";
 import { admitCancelIntent, parseCancelIntent } from "../intents/cancel.ts";
 import { IntentError } from "../intents/types.ts";
-import { parseOrderIntent } from "../intents/validate.ts";
+import { isSolanaAddress, parseOrderIntent } from "../intents/validate.ts";
 import { admitOrderIntent } from "../intents/verify.ts";
 import { loadSettlement } from "../db/settlements.ts";
+import { listWalletOrders, type Page, type StoredOrder } from "../db/history.ts";
 import { isUuidV4 } from "../engine/ids.ts";
 import { orderNeed, type CoverageChecker } from "../solana/coverage.ts";
 import { buildCatalog, canonicalAddress, type Catalog } from "./catalog.ts";
@@ -142,6 +143,77 @@ export function matchJson(m: Match): Json {
     // Matched off-chain only. Settlement is the worker's (a stub in this build).
     status: "pending",
   };
+}
+
+/** Remaining quantity of a stored order, as the engine counts it: quantity - (filled - released - voided). */
+function storedRemaining(o: StoredOrder): bigint {
+  return o.quantity - (o.filledQuantity - (o.releasedQuantity ?? 0n) - (o.voidedQuantity ?? 0n));
+}
+
+/**
+ * A stored order (any status) for its wallet: the fields of `orderJson`, plus the nonce
+ * (what a signed cancellation names), the failed-match counters, why it left the book,
+ * and when it was placed. Never the intent or cancellation signature.
+ */
+export function storedOrderJson(o: StoredOrder): Json {
+  return {
+    id: o.id,
+    seq: o.seq,
+    chain: o.chain,
+    asset: canonicalAddress(o.chain, o.asset) ?? o.asset,
+    wallet: o.wallet,
+    side: o.side,
+    quantity: o.quantity.toString(),
+    lotSize: o.lotSize.toString(),
+    limitPrice: o.limitPrice.toString(),
+    paymentAsset: canonicalAddress(o.chain, o.paymentAsset) ?? o.paymentAsset,
+    nonce: o.nonce,
+    expiresAt: o.expiresAt,
+    filledQuantity: o.filledQuantity.toString(),
+    settledQuantity: (o.settledQuantity ?? 0n).toString(),
+    releasedQuantity: (o.releasedQuantity ?? 0n).toString(),
+    voidedQuantity: (o.voidedQuantity ?? 0n).toString(),
+    remaining: storedRemaining(o).toString(),
+    status: o.status,
+    cancelReason: o.cancelReason ?? null,
+    createdAt: o.createdAt,
+  };
+}
+
+const PAGE_MAX = 100;
+
+/** `limit` (1..max, default 50) and `before` (a positive seq) from query parameters. */
+export function parsePage(query: Readonly<Record<string, string | undefined>>, max = PAGE_MAX): Page | Reply {
+  const limitRaw = query["limit"];
+  const beforeRaw = query["before"];
+  let limit = Math.min(50, max);
+  if (limitRaw !== undefined) {
+    if (!/^[1-9][0-9]{0,3}$/.test(limitRaw) || Number(limitRaw) > max) return error(400, "invalid_limit", `limit must be 1 to ${max}`);
+    limit = Number(limitRaw);
+  }
+  let before: number | null = null;
+  if (beforeRaw !== undefined) {
+    if (!/^[1-9][0-9]{0,15}$/.test(beforeRaw)) return error(400, "invalid_cursor", "before must be a positive integer (a seq)");
+    before = Number(beforeRaw);
+  }
+  return { limit, before };
+}
+
+/** The `next` cursor of a page: its last seq when the page is full, else null. */
+function nextCursor(rows: readonly { seq: number }[], page: Page): number | null {
+  return rows.length === page.limit ? rows[rows.length - 1]!.seq : null;
+}
+
+/** `chain` and `wallet` query parameters: a known chain and an address of its kind, canonical spelling. */
+function chainAndWallet(query: Readonly<Record<string, string | undefined>>): { chain: ChainId; wallet: string } | Reply {
+  const chain = query["chain"];
+  const wallet = query["wallet"];
+  if (!isChainId(chain)) return error(400, "invalid_chain", "chain must be one of the v1 chains");
+  const canonical = wallet === undefined ? null : canonicalAddress(chain, wallet);
+  if (canonical === null || (CHAINS[chain].kind === "solana" && !isSolanaAddress(canonical))) {
+    return error(400, "invalid_wallet", `wallet must be an address on ${chain}`);
+  }
+  return { chain, wallet: canonical };
 }
 
 function bodyFields(body: unknown, intentField: string): { payload: unknown; signature: string } | Reply {
@@ -456,6 +528,21 @@ export class OrderService {
         settlement: row.status === null ? null : { status: row.status, attempts: row.attempts, txHash: row.txHash, error: row.error },
       },
     };
+  }
+
+  /**
+   * A wallet's orders on one chain, every status, newest first (`?chain=&wallet=&limit=&before=`).
+   * TESTNET: public by wallet address, no sign-in (see docs/decisions.md: a mainnet
+   * deployment must require the wallet's sign-in, because a wallet's open orders and
+   * nonces help front-running).
+   */
+  async walletOrders(query: Readonly<Record<string, string | undefined>>): Promise<Reply> {
+    const who = chainAndWallet(query);
+    if ("status" in who) return who;
+    const page = parsePage(query);
+    if ("status" in page) return page;
+    const rows = await asServiceRole(this.deps.db, (tx) => listWalletOrders(tx, who.chain, who.wallet, page));
+    return { status: 200, body: { chain: who.chain, wallet: who.wallet, orders: rows.map(storedOrderJson), next: nextCursor(rows, page) } };
   }
 
   /** Takes every order that is no longer matchable out of the books and stores it expired. */
