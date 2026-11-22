@@ -29,6 +29,7 @@ describe("loadConfig", () => {
       evmSettlementChains: [],
       evmOperatorKeystore: null,
       evmOperatorKeystorePassword: null,
+      corsOrigins: [],
     });
     expect(() => loadConfig({ DATABASE_URL: URL_OK })).toThrow(/SOLANA_OPERATOR_KEYPAIR/);
     expect(loadConfig({ DATABASE_URL: URL_OK, SOLANA_OPERATOR_KEYPAIR: "/outside/operator.json" })).toMatchObject({
@@ -135,6 +136,18 @@ describe("loadConfig", () => {
     expect(redactSecrets("https://sepolia.base.org is public", env)).toBe("https://sepolia.base.org is public");
   });
 
+  it("reads the CORS origins: exact http(s) origins only, never a wildcard", () => {
+    const base = { ...NO_WORKER, DATABASE_URL: URL_OK };
+    expect(
+      loadConfig({ ...base, CORS_ORIGINS: "http://localhost:3000, https://niara-test.vercel.app,http://localhost:3000" }).corsOrigins,
+    ).toEqual(["http://localhost:3000", "https://niara-test.vercel.app"]);
+    expect(loadConfig({ ...base, CORS_ORIGINS: "" }).corsOrigins).toEqual([]);
+    for (const bad of ["*", "https://*.vercel.app", "http://localhost:3000/", "https://site.example/trade", "localhost:3000", "ftp://x.example"]) {
+      expect(() => loadConfig({ ...base, CORS_ORIGINS: bad }), bad).toThrow(/CORS_ORIGINS/);
+    }
+    expect(describeConfig(loadConfig({ ...base, CORS_ORIGINS: "http://localhost:3000" })).corsOrigins).toBe("http://localhost:3000");
+  });
+
   it(".env.example parses, holds placeholders only, and documents every variable", () => {
     const text = readFileSync(join(import.meta.dirname, "../.env.example"), "utf8");
     const env: Record<string, string> = {};
@@ -160,6 +173,7 @@ describe("loadConfig", () => {
         "WORKER_ENABLED",
         "WORKER_MAX_ATTEMPTS",
         "WORKER_POLL_SECS",
+        "CORS_ORIGINS",
       ].sort(),
     );
     expect(env["DATABASE_URL"]).toContain("PASSWORD@DB_HOST");

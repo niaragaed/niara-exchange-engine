@@ -106,7 +106,7 @@ async function main(): Promise<void> {
     });
   }
 
-  const app = createApp(service, { maxBodyBytes: config.maxBodyBytes, log });
+  const app = createApp(service, { maxBodyBytes: config.maxBodyBytes, corsOrigins: config.corsOrigins, log });
   const server = serve({ fetch: app.fetch, hostname: config.host, port: config.port }, (info) =>
     log("listening", { host: info.address, port: info.port }),
   );

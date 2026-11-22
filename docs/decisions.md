@@ -222,6 +222,16 @@ order.
   orders rest is refused and logged.
 - **Settlement** is the worker's (below), in the same process; with
   `WORKER_ENABLED=off`, matches stay `pending`.
+- **CORS** (for the Niara site, `niara-site/docs/engine-changes-needed.md`
+  item 1). Only the exact origins in `CORS_ORIGINS` (comma-separated
+  `scheme://host[:port]`; `http://localhost:3000` for now, the Vercel domain
+  once deployed) get `Access-Control-Allow-Origin`, echoed back with
+  `Vary: Origin`; `*`, wildcards and anything with a path are refused by the
+  configuration. Methods `GET, POST, OPTIONS`, request header `content-type`,
+  no credentials (the API has no cookies or sessions), preflights cached
+  600 s. The headers are set on every response, errors included, so the
+  browser can read a 4xx body. CORS only limits browsers: it is not access
+  control, and every endpoint stays safe to call from anywhere.
 
 ## Configuration (`src/config.ts`, `.env.example`)
 
@@ -230,8 +240,8 @@ Environment variables only (`npm start` runs `node --env-file=.env`):
 `MAX_OPEN_ORDERS_PER_WALLET`, `SETTLEMENT_MARGIN_SECS`, `EXPIRY_SWEEP_SECS`,
 `MARKET_REFRESH_SECS`, `SOLANA_RPC_URL` (optional, devnet only),
 `DELEGATE_CHECK`, `WORKER_ENABLED`, `SOLANA_OPERATOR_KEYPAIR` (a path),
-`WORKER_POLL_SECS`, `WORKER_MAX_ATTEMPTS`, `SETTLE_DEADLINE_MARGIN_SECS`.
-The service refuses to start when a `NEXT_PUBLIC_*` variable names a server
+`WORKER_POLL_SECS`, `WORKER_MAX_ATTEMPTS`, `SETTLE_DEADLINE_MARGIN_SECS`,
+`CORS_ORIGINS`. The service refuses to start when a `NEXT_PUBLIC_*` variable names a server
 secret (service role, password, database URL, private or operator key,
 keypair, JWT secret) or contains the database URL, its password,
 `SUPABASE_SERVICE_ROLE_KEY` or a private RPC URL. Logs never show any part of

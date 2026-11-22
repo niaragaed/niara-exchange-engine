@@ -1,5 +1,6 @@
 import { Hono, type Context } from "hono";
 import { bodyLimit } from "hono/body-limit";
+import { cors } from "hono/cors";
 import type { ContentfulStatusCode } from "hono/utils/http-status";
 import type { OrderService, Reply } from "./order-service.ts";
 
@@ -13,13 +14,35 @@ import type { OrderService, Reply } from "./order-service.ts";
  *   GET  /health
  *
  * Bodies above `maxBodyBytes` are refused with 413 before they are parsed.
+ *
+ * CORS: only the exact origins of `corsOrigins` (CORS_ORIGINS) get
+ * `Access-Control-Allow-Origin`, never `*`; methods GET, POST, OPTIONS; request header
+ * content-type; no credentials. Preflights (OPTIONS) are answered 204 for every path.
  */
 export function createApp(
   service: OrderService,
-  options: { maxBodyBytes: number; log?: (event: string, data?: Record<string, unknown>) => void },
+  options: {
+    maxBodyBytes: number;
+    corsOrigins?: readonly string[];
+    log?: (event: string, data?: Record<string, unknown>) => void;
+  },
 ): Hono {
   const app = new Hono();
   const send = (c: Context, r: Reply) => c.json(r.body, r.status as ContentfulStatusCode);
+
+  // First, so that preflights and error responses carry the CORS headers too.
+  const origins = [...(options.corsOrigins ?? [])];
+  if (origins.includes("*")) throw new Error("CORS origins must be listed one by one, never *");
+  app.use(
+    "*",
+    cors({
+      origin: (origin) => (origins.includes(origin) ? origin : null),
+      allowMethods: ["GET", "POST", "OPTIONS"],
+      allowHeaders: ["content-type"],
+      credentials: false,
+      maxAge: 600,
+    }),
+  );
 
   app.use(
     "/v1/*",

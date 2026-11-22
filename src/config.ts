@@ -44,6 +44,11 @@ export interface ServiceConfig {
   evmOperatorKeystore: string | null;
   /** Its password. Secret. */
   evmOperatorKeystorePassword: string | null;
+  /**
+   * Browser origins allowed to call the HTTP API (CORS), exact matches; empty = none.
+   * Never `*`: the API is for the Niara site only.
+   */
+  corsOrigins: string[];
 }
 
 export class ConfigError extends Error {
@@ -136,9 +141,31 @@ export function loadConfig(env: Env = process.env): ServiceConfig {
     marketRefreshSecs: int(env, "MARKET_REFRESH_SECS", 60, 1, 86_400),
     solanaRpcUrl: rpcUrl(env["SOLANA_RPC_URL"]),
     delegateCheck: bool(env, "DELEGATE_CHECK", true),
+    corsOrigins: corsOrigins(env["CORS_ORIGINS"]),
     ...workerConfig(env),
     ...evmConfig(env),
   };
+}
+
+/**
+ * `CORS_ORIGINS`: comma-separated origins (`scheme://host[:port]`, no path, no trailing
+ * slash), each http(s). `*` and anything that is not exactly an origin are refused.
+ */
+function corsOrigins(raw: string | undefined): string[] {
+  const list = (raw ?? "").split(",").map((o) => o.trim()).filter((o) => o !== "");
+  for (const o of list) {
+    if (o.includes("*")) throw new ConfigError("CORS_ORIGINS: wildcards are not allowed; list each origin");
+    let url: URL;
+    try {
+      url = new URL(o);
+    } catch {
+      throw new ConfigError(`CORS_ORIGINS: ${o} is not an origin`);
+    }
+    if ((url.protocol !== "https:" && url.protocol !== "http:") || url.origin !== o) {
+      throw new ConfigError(`CORS_ORIGINS: ${o} is not an origin (scheme://host[:port], no path or trailing slash)`);
+    }
+  }
+  return [...new Set(list)];
 }
 
 function evmConfig(env: Env) {
@@ -203,9 +230,10 @@ function bool(env: Env, name: string, fallback: boolean): boolean {
  * database, password) and no RPC URL, which may hold an API key.
  */
 export function describeConfig(c: ServiceConfig): Record<string, string | number | boolean | null> {
-  const { databaseUrl: _db, solanaRpcUrl, evmOperatorKeystorePassword: pw, evmSettlementChains, ...rest } = c;
+  const { databaseUrl: _db, solanaRpcUrl, evmOperatorKeystorePassword: pw, evmSettlementChains, corsOrigins, ...rest } = c;
   return {
     ...rest,
+    corsOrigins: corsOrigins.join(",") || "(none)",
     evmSettlementChains: evmSettlementChains.join(",") || "(none)",
     evmOperatorKeystorePassword: pw ? "(set, not shown)" : null,
     databaseUrl: "(set, not shown)",
