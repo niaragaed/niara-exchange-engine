@@ -55,9 +55,17 @@ The order service refuses to start while a migration it writes through is missin
 |---|---|---|
 | `POST /v1/orders` | `{ intent, signature }` | Submit a signed order intent (Solana `signMessage` text or EIP-712) |
 | `POST /v1/orders/cancel` | `{ cancel, signature }` | Cancel an order with a signed cancellation (by chain, wallet and nonce) |
-| `GET /v1/books/:chain/:asset` | | Public book: price levels only |
+| `GET /v1/orders?chain=&wallet=` | | A wallet's orders, newest first, with nonces (unsigned: testnet only) |
+| `GET /v1/orders/:id` | | One order's current state, its matches and their settlements |
+| `GET /v1/matches?chain=&wallet=` | | A wallet's matches with settlement status and tx hash (unsigned: testnet only) |
 | `GET /v1/matches/:id` | | A match's settlement status and tx hash (no wallets) |
+| `GET /v1/trades/:chain/:asset` | | Settled trades of a market (no wallets), for history and candles |
+| `GET /v1/markets` | | Chains (orders accepted? settlement enabled?) and their approved equity markets |
+| `GET /v1/books/:chain/:asset` | | Public book: price levels only |
 | `GET /health` | | Liveness, with the testnet notice |
+
+Lists page with `limit` and `before` (the `next` cursor of the previous page).
+Browsers may call the API only from the exact origins in `CORS_ORIGINS`.
 
 Amounts are decimal strings in JSON (base units: quantity in asset base
 units, price in USDT base units per lot). Formats: `docs/decisions.md`.
@@ -91,6 +99,40 @@ only worker). It needs the Solana settlement operator's keypair **path**
 
 Tests run on PGlite with the real migrations and a mocked Solana RPC; the
 `pg` adapter was checked read-only against the remote database.
+
+### Running it for a browser test of the site (`niara-site`, http://localhost:3000)
+
+In your own Ubuntu (WSL) terminal, with `.env` holding `DATABASE_URL`,
+`WORKER_ENABLED=on`, `SOLANA_OPERATOR_KEYPAIR`, `EVM_SETTLEMENT_CHAINS=base-sepolia`,
+`EVM_OPERATOR_KEYSTORE`, `EVM_OPERATOR_KEYSTORE_PASSWORD` and
+`CORS_ORIGINS=http://localhost:3000`:
+
+```bash
+cd ~/niara-exchange-engine
+mkdir -p ~/niara-logs
+npm start 2>&1 | tee ~/niara-logs/service-$(date -u +%Y%m%dT%H%M%SZ).log
+```
+
+It runs in the foreground: leave that terminal open. It is up once it logs
+`listening` and one `worker_starting` line per chain (`solana-devnet`,
+`base-sepolia`). From a second terminal:
+
+```bash
+curl -s http://127.0.0.1:8787/health
+curl -s http://127.0.0.1:8787/v1/markets          # settlementEnabled true for solana-devnet and base-sepolia
+curl -si -X OPTIONS http://127.0.0.1:8787/v1/orders \
+  -H 'Origin: http://localhost:3000' -H 'Access-Control-Request-Method: POST' \
+  -H 'Access-Control-Request-Headers: content-type' | grep -i '^access-control-allow-origin'
+```
+
+The last one must print `access-control-allow-origin: http://localhost:3000`.
+The service listens on 127.0.0.1 only; a browser on Windows reaches it through
+WSL's localhost forwarding at http://localhost:8787.
+
+Stop it with **Ctrl+C** in its terminal (it logs `stopping` and releases the
+single-instance lock). If the terminal is gone: `pkill -INT -f src/service/main.ts`,
+then `ss -ltn | grep 8787` must print nothing. A second `npm start` while one is
+running exits with `refused_to_start` (the advisory lock).
 
 ## Solana devnet
 
@@ -171,13 +213,14 @@ the mints' Token-2022 metadata. Every listing publishes both:
 | solana-devnet | `8iWQ…A24y` (currency) | mockUSDT | Niara Mock USDT (TEST) |
 | solana-devnet | `5EVn…afjk` (currency) | mockBRL | Niara Mock BRL (TEST) |
 
-### End-to-end on Base Sepolia (`scripts/e2e-evm.ts`, not run yet)
+### End-to-end on Base Sepolia (`scripts/e2e-evm.ts`)
 
 The same shape as the Solana run, with the demo investors of the niara-contracts
 Base Sepolia demo: investor B (holds tEQTY) sells 10 tEQTY to investor A (holds
 mockUSDT) at 25 mockUSDT; expected fee 1.25 (50 bps, rounded up), cashback 0.25
 (20% of the fee), seller receives 248.75. Writes to Base Sepolia: two approvals
-(one per wallet, each paying its own gas) and the worker's `settle`.
+(one per wallet, each paying its own gas) and the worker's `settle`. Run once on
+2026-11-22, every check passed: `docs/base-sepolia-e2e-2026-11-22.md`.
 
 Before running it: apply migration `20261120130000_cancel_reasons`; mark
 `base-sepolia` reviewed in `config/evm-testnets.json`; apply the listing sync for
