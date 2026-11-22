@@ -34,7 +34,10 @@ Supabase project `niara-exchange-dev` (Postgres 17). Migrations live in
 | `20261116120000_exchange_schema` | **Applied** (by the founder, through the Supabase dashboard tooling) |
 | `20261116130000_fk_indexes` | **Applied** (by the founder; `matches_chain_asset_idx` seen on the remote on 2026-11-16) |
 | `20261120120000_match_reversals` | **Applied** (by the founder; seen in `supabase_migrations.schema_migrations` on 2026-11-20). Failed matches after both orders were filled: settled/released/voided counters and the `match_reversals` audit table |
-| `20261120130000_cancel_reasons` | **Not applied.** `orders.cancel_reason` and `orders.cancel_signature`, written on every cancellation, expiry and stale. The order service refuses to start until it is applied |
+| `20261120130000_cancel_reasons` | **Applied** (by the founder, 2026-11-22). `orders.cancel_reason` and `orders.cancel_signature`, written on every cancellation, expiry and stale |
+| `20261122120000_listing_metadata` | **Applied** (by the founder, 2026-11-22). `listings.symbol` and `listings.name`, from each token's on-chain metadata, filled by both listing syncs |
+
+The order service refuses to start while a migration it writes through is missing, and names it.
 
 - The obsolete September prototype was moved to the schema
   `legacy_prototype_2026_09`, outside the API. This repo only uses `public`.
@@ -151,6 +154,22 @@ Applied for `base-sepolia` on 2026-11-22 (chain marked reviewed by the founder):
 listings (tEQTY, tBOND, mockUSDT, mockBRL) from ListingRegistry events in blocks
 59342255 to 62135072, and the chain's settlement contract and mockUSDT set.
 Robinhood and Tempo are not reviewed or synced yet.
+
+Re-applied on 2026-11-22 after migration `20261122120000_listing_metadata`
+(blocks 59342255 to 62228279) to fill `symbol` and `name` from each token's own
+`symbol()` and `name()`; the Solana devnet sync was re-applied the same day from
+the mints' Token-2022 metadata. Every listing publishes both:
+
+| Chain | Listing | `symbol` | `name` |
+|---|---|---|---|
+| base-sepolia | `0x0f1c…bDD7` (equity) | tEQTY | Niara Demo Equity (TEST) |
+| base-sepolia | `0x4b69…B5b2` (fixed income) | tBOND | Niara Demo Bond 2030 (TEST) |
+| base-sepolia | `0x4ED5…7457` (currency) | mockUSDT | Niara Mock USDT (TESTNET ONLY - NO VALUE) |
+| base-sepolia | `0x2624…500B` (currency) | mockBRL | Niara Mock BRL (TESTNET ONLY - NO VALUE) |
+| solana-devnet | `8LjQ…zsTo` (equity) | tEQTY | Niara Demo Equity (TEST) |
+| solana-devnet | `4EBR…7Jnf` (fixed income) | tDEB | Niara Demo Debenture (TEST) |
+| solana-devnet | `8iWQ…A24y` (currency) | mockUSDT | Niara Mock USDT (TEST) |
+| solana-devnet | `5EVn…afjk` (currency) | mockBRL | Niara Mock BRL (TEST) |
 
 ### End-to-end on Base Sepolia (`scripts/e2e-evm.ts`, not run yet)
 
