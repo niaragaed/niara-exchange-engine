@@ -17,7 +17,14 @@ import { IntentError } from "../intents/types.ts";
 import { isSolanaAddress, parseOrderIntent } from "../intents/validate.ts";
 import { admitOrderIntent } from "../intents/verify.ts";
 import { loadSettlement } from "../db/settlements.ts";
-import { listWalletOrders, type Page, type StoredOrder } from "../db/history.ts";
+import {
+  listOrderMatches,
+  listWalletOrders,
+  loadStoredOrder,
+  type MatchHistoryRow,
+  type Page,
+  type StoredOrder,
+} from "../db/history.ts";
 import { isUuidV4 } from "../engine/ids.ts";
 import { orderNeed, type CoverageChecker } from "../solana/coverage.ts";
 import { buildCatalog, canonicalAddress, type Catalog } from "./catalog.ts";
@@ -177,6 +184,42 @@ export function storedOrderJson(o: StoredOrder): Json {
     status: o.status,
     cancelReason: o.cancelReason ?? null,
     createdAt: o.createdAt,
+  };
+}
+
+/**
+ * A stored match without wallets: its terms, its status, and its settlement (status,
+ * attempts, tx hash, error; `settledAt` once confirmed).
+ */
+export function matchHistoryJson(m: MatchHistoryRow): Json {
+  const confirmed = m.settlement?.status === "confirmed";
+  return {
+    id: m.id,
+    sequence: m.seq,
+    chain: m.chain,
+    asset: canonicalAddress(m.chain, m.asset) ?? m.asset,
+    paymentAsset: canonicalAddress(m.chain, m.paymentAsset) ?? m.paymentAsset,
+    buyOrderId: m.buyOrderId,
+    sellOrderId: m.sellOrderId,
+    makerOrderId: m.makerOrderId,
+    takerSide: m.makerOrderId === m.buyOrderId ? "sell" : "buy",
+    quantity: m.quantity.toString(),
+    lotSize: m.lotSize.toString(),
+    price: m.price.toString(),
+    paymentAmount: m.paymentAmount.toString(),
+    expiresAt: m.expiresAt,
+    matchedAt: m.matchedAt,
+    status: m.status,
+    settlement:
+      m.settlement === null
+        ? null
+        : {
+            status: m.settlement.status,
+            attempts: m.settlement.attempts,
+            txHash: m.settlement.txHash,
+            error: m.settlement.error,
+            settledAt: confirmed ? m.settlement.updatedAt : null,
+          },
   };
 }
 
@@ -543,6 +586,28 @@ export class OrderService {
     if ("status" in page) return page;
     const rows = await asServiceRole(this.deps.db, (tx) => listWalletOrders(tx, who.chain, who.wallet, page));
     return { status: 200, body: { chain: who.chain, wallet: who.wallet, orders: rows.map(storedOrderJson), next: nextCursor(rows, page) } };
+  }
+
+  /**
+   * One order's current state from the database (any status, also orders the engine no
+   * longer holds after a restart), with its matches and their settlements, oldest first.
+   * Order ids are random UUID v4s, handed to the wallet in the placement response.
+   */
+  async orderStatus(orderId: string): Promise<Reply> {
+    if (!isUuidV4(orderId)) return error(404, "unknown_order");
+    const found = await asServiceRole(this.deps.db, async (tx) => {
+      const order = await loadStoredOrder(tx, orderId);
+      return order === null ? null : { order, matches: await listOrderMatches(tx, orderId) };
+    });
+    if (!found) return error(404, "unknown_order");
+    return {
+      status: 200,
+      body: {
+        order: storedOrderJson(found.order),
+        matchIds: found.matches.map((m) => m.id),
+        matches: found.matches.map(matchHistoryJson),
+      },
+    };
   }
 
   /** Takes every order that is no longer matchable out of the books and stores it expired. */

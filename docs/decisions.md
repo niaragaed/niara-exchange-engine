@@ -237,6 +237,13 @@ order.
   orders, limit prices, expiries and nonces, tied to its address, show what
   it is about to trade and help front-run it, which the public book (price
   levels only, no wallets) does not.
+- **One order** (`GET /v1/orders/:id`, site item 3): read from the
+  database, so it answers any status and orders the engine no longer holds
+  after a restart; the order (as in the wallet list), its `matchIds`, and its
+  matches oldest first with their settlement (status, attempts, tx hash,
+  error, `settledAt` once confirmed). Matches carry order ids, never wallets.
+  Public by id: order ids are random UUID v4s handed to the wallet at
+  placement.
 - **CORS** (for the Niara site, `niara-site/docs/engine-changes-needed.md`
   item 1). Only the exact origins in `CORS_ORIGINS` (comma-separated
   `scheme://host[:port]`; `http://localhost:3000` for now, the Vercel domain

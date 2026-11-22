@@ -10,6 +10,7 @@ import type { OrderService, Reply } from "./order-service.ts";
  *   POST /v1/orders          { intent, signature }   submit a signed order intent
  *   POST /v1/orders/cancel   { cancel, signature }   cancel an order (signed, by nonce)
  *   GET  /v1/orders?chain=&wallet=[&limit=&before=]  a wallet's orders, newest first (unsigned: testnet only)
+ *   GET  /v1/orders/:id                              one order's current state, with its matches
  *   GET  /v1/books/:chain/:asset                     public book (price levels only)
  *   GET  /v1/matches/:id                             a match's settlement status and tx hash
  *   GET  /health
@@ -74,6 +75,8 @@ export function createApp(
   });
 
   app.get("/v1/orders", async (c) => send(c, await service.walletOrders(c.req.query())));
+
+  app.get("/v1/orders/:id", async (c) => send(c, await service.orderStatus(c.req.param("id"))));
 
   app.get("/v1/books/:chain/:asset", async (c) => send(c, await service.book(c.req.param("chain"), c.req.param("asset"))));
 

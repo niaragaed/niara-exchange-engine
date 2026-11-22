@@ -1,5 +1,7 @@
 import { randomBytes, randomUUID } from "node:crypto";
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from "vitest";
+import { addSettledQuantity, asServiceRole, loadMatches } from "../../src/db/repository.ts";
+import { setMatchStatus, writeSettlement } from "../../src/db/settlements.ts";
 import { randomMatchId } from "../../src/engine/random-id.ts";
 import type { OrderIntent } from "../../src/intents/types.ts";
 import { createApp } from "../../src/service/http.ts";
@@ -30,6 +32,7 @@ import {
  */
 
 const SOL_LOT = 1_000_000n;
+const TEST_TX = (n: number) => `TEST-TX-${n}`; // a made-up hash, not a real transaction
 
 let t: TestDb;
 let service: OrderService;
@@ -76,6 +79,16 @@ function sol(signer: SolanaSigner, over: Partial<OrderIntent> = {}): OrderIntent
 
 async function submit(signer: SolanaSigner | EvmSigner, intent: OrderIntent) {
   return post("/v1/orders", { intent: json(intent), signature: await signer.sign(intent) });
+}
+
+/** What the worker writes when a match settles (src/worker/worker.ts), with a made-up tx hash. */
+async function settle(matchId: string, txHash: string): Promise<void> {
+  const m = (await loadMatches(t.db)).find((x) => x.id === matchId)!;
+  await asServiceRole(t.db, async (tx) => {
+    await writeSettlement(tx, { matchId, chain: m.chain, status: "confirmed", attempts: 1, txHash, error: null });
+    await setMatchStatus(tx, matchId, "settled");
+    await addSettledQuantity(tx, [m.buyOrderId, m.sellOrderId], m.quantity);
+  });
 }
 
 beforeAll(async () => {
@@ -188,5 +201,60 @@ describe("GET /v1/orders?chain=&wallet= (a wallet's orders)", () => {
     expect(await bad(`chain=solana-devnet&wallet=${alice.wallet}&limit=101`)).toBe("invalid_limit");
     expect(await bad(`chain=solana-devnet&wallet=${alice.wallet}&before=-1`)).toBe("invalid_cursor");
     expect((await get(`/v1/orders?chain=ethereum&wallet=x`)).status).toBe(400);
+  });
+});
+
+describe("GET /v1/orders/:id (one order's current state)", () => {
+  it("shows a resting order filled later by another taker, its matches, then their settlement", async () => {
+    const maker = (await submit(alice, sol(alice, { side: "sell", quantity: 3n * SOL_LOT }))).body.order;
+    const before = await get(`/v1/orders/${maker.id}`);
+    expect(before.status).toBe(200);
+    expect(before.body).toMatchObject({ order: { id: maker.id, status: "open", remaining: "3000000" }, matchIds: [], matches: [] });
+
+    const m1 = (await submit(bob, sol(bob, { side: "buy", quantity: SOL_LOT }))).body.matches[0];
+    const m2 = (await submit(carol, sol(carol, { side: "buy", quantity: 2n * SOL_LOT, limitPrice: 26_000_000n }))).body.matches[0];
+    const filled = await get(`/v1/orders/${maker.id}`);
+    expect(filled.body.order).toMatchObject({ status: "filled", filledQuantity: "3000000", remaining: "0", settledQuantity: "0" });
+    expect(filled.body.matchIds).toEqual([m1.id, m2.id]);
+    expect(filled.body.matches[1]).toMatchObject({
+      id: m2.id,
+      sellOrderId: maker.id,
+      makerOrderId: maker.id,
+      takerSide: "buy",
+      quantity: "2000000",
+      price: "25000000",
+      paymentAmount: "50000000",
+      status: "pending",
+      settlement: null,
+    });
+
+    await settle(m1.id, TEST_TX(1));
+    const settled = await get(`/v1/orders/${maker.id}`);
+    expect(settled.body.order.settledQuantity).toBe("1000000");
+    expect(settled.body.matches[0]).toMatchObject({
+      status: "settled",
+      settlement: { status: "confirmed", attempts: 1, txHash: TEST_TX(1), error: null },
+    });
+    expect(Date.parse(settled.body.matches[0].settlement.settledAt)).not.toBeNaN();
+    expect(settled.body.matches[1].settlement).toBeNull();
+    // No wallets in matches, and never the signatures.
+    expect(JSON.stringify(settled.body.matches)).not.toContain(bob.wallet);
+    expect(JSON.stringify(settled.body)).not.toMatch(/ignature/);
+  });
+
+  it("answers orders the engine no longer holds after a restart, from the database", async () => {
+    const intent = sol(alice, { side: "sell" });
+    const order = (await submit(alice, intent)).body.order;
+    const cancel = cancelOf(intent);
+    await post("/v1/orders/cancel", { cancel, signature: await alice.signCancel(cancel) });
+    service = await OrderService.start(deps());
+    app = createApp(service, { maxBodyBytes: 4096 });
+    expect((await get(`/v1/orders/${order.id}`)).body.order).toMatchObject({ status: "cancelled", cancelReason: "by_wallet" });
+  });
+
+  it("answers 404 for an unknown or malformed id", async () => {
+    expect((await get(`/v1/orders/${randomUUID()}`)).body.error).toBe("unknown_order");
+    expect((await get("/v1/orders/not-a-uuid")).status).toBe(404);
+    expect((await get("/v1/orders/cancel")).status).toBe(404);
   });
 });
