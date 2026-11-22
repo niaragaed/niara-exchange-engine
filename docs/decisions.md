@@ -579,4 +579,7 @@ These go to `niara-exchange-solana`, which owns the spec.
     indexed today, so finding the transaction of a settled match means
     scanning `Settled` logs by asset, payment token and buyer. Indexing
     `matchId` would make it one exact `eth_getLogs` query. A change to
-    niara-contracts, not to this repo.
+    niara-contracts, not to this repo. **Deferred** (founder, 2026-11-22) to
+    the next contract version: the EVM contracts are not upgradeable, and the
+    worker already records the settle transaction's hash, so the log scan
+    only runs to recover a transaction the database does not have.
