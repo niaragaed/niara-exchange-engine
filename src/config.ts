@@ -4,6 +4,7 @@ import { fileURLToPath } from "node:url";
 import { base58, base64, hex } from "@scure/base";
 import { EVM_CHAIN_IDS, isEvmChainId, type EvmChainId } from "./evm/settings.ts";
 import { describeKeySource, type KeySource } from "./key-source.ts";
+import type { ProxyTrust } from "./service/rate-limit.ts";
 
 /**
  * Order service configuration: environment variables only (no config file, no
@@ -70,6 +71,15 @@ export interface ServiceConfig {
    * Never `*`: the API is for the Niara site only.
    */
   corsOrigins: string[];
+  /** Requests per minute per client IP: reads (GET, OPTIONS) and writes (POST, stricter). */
+  rateLimitReadsPerMin: number;
+  rateLimitWritesPerMin: number;
+  /**
+   * Where the client IP comes from: `railway` = the X-Real-IP header Railway's edge
+   * sets (the default there, and the only value allowed there: every request reaches
+   * the container from the proxy); `none` = the TCP peer (the local default).
+   */
+  trustProxy: ProxyTrust;
 }
 
 export class ConfigError extends Error {
@@ -238,6 +248,9 @@ export function loadConfig(env: Env = process.env): ServiceConfig {
     solanaRpcUrl: rpcUrl(env["SOLANA_RPC_URL"]),
     delegateCheck: bool(env, "DELEGATE_CHECK", true),
     corsOrigins: corsOrigins(env["CORS_ORIGINS"]),
+    rateLimitReadsPerMin: int(env, "RATE_LIMIT_READS_PER_MIN", 300, 1, 100_000),
+    rateLimitWritesPerMin: int(env, "RATE_LIMIT_WRITES_PER_MIN", 30, 1, 10_000),
+    trustProxy: trustProxy(env["TRUST_PROXY"], platform),
     ...workerConfig(env),
     ...evmConfig(env),
   };
@@ -265,6 +278,21 @@ function listenHost(raw: string | undefined, platform: "railway" | "local"): str
     throw new ConfigError(`HOST=${host} is unreachable from Railway's proxy: unset HOST (0.0.0.0 is the default there) or set 0.0.0.0 or ::`);
   }
   return host;
+}
+
+/**
+ * TRUST_PROXY: which forwarded header names the client. Only Railway's X-Real-IP is
+ * ever trusted (never X-Forwarded-For). On Railway every request arrives from the edge
+ * proxy, so `none` would put all clients in one bucket: refused there.
+ */
+function trustProxy(raw: string | undefined, platform: "railway" | "local"): ProxyTrust {
+  const v = (raw ?? "").trim();
+  if (v === "") return platform === "railway" ? "railway" : "none";
+  if (v !== "railway" && v !== "none") throw new ConfigError("TRUST_PROXY must be railway or none");
+  if (platform === "railway" && v === "none") {
+    throw new ConfigError("TRUST_PROXY=none on Railway would rate-limit every client as the proxy's address: unset it or set railway");
+  }
+  return v;
 }
 
 /**

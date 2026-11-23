@@ -1,5 +1,6 @@
 import { randomUUID } from "node:crypto";
 import { serve } from "@hono/node-server";
+import { getConnInfo } from "@hono/node-server/conninfo";
 import { ConfigError, describeConfig, loadConfig, redactSecrets } from "../config.ts";
 import { connectPg } from "../db/pg.ts";
 import { randomMatchId } from "../engine/random-id.ts";
@@ -18,6 +19,7 @@ import type { CoverageChecker } from "../solana/coverage.ts";
 import { loadKeypairSource } from "../solana/keypair.ts";
 import { SettlementWorker } from "../worker/worker.ts";
 import { createApp } from "./http.ts";
+import { clientKey } from "./rate-limit.ts";
 import { NotSingleInstanceError, OrderService, SchemaNotReadyError, ServiceRoleError } from "./order-service.ts";
 
 /**
@@ -111,7 +113,17 @@ async function main(): Promise<void> {
     });
   }
 
-  const app = createApp(service, { maxBodyBytes: config.maxBodyBytes, corsOrigins: config.corsOrigins, log });
+  const app = createApp(service, {
+    maxBodyBytes: config.maxBodyBytes,
+    corsOrigins: config.corsOrigins,
+    rateLimit: {
+      readsPerMinute: config.rateLimitReadsPerMin,
+      writesPerMinute: config.rateLimitWritesPerMin,
+      // Railway: its edge's X-Real-IP; locally: the TCP peer. Never X-Forwarded-For.
+      key: (c) => clientKey(config.trustProxy, c.req.header("x-real-ip"), getConnInfo(c).remote.address),
+    },
+    log,
+  });
   const server = serve({ fetch: app.fetch, hostname: config.host, port: config.port }, (info) =>
     log("listening", { host: info.address, port: info.port }),
   );

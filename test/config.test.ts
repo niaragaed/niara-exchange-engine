@@ -39,6 +39,9 @@ describe("loadConfig", () => {
       evmOperatorKeystore: null,
       evmOperatorKeystorePassword: null,
       corsOrigins: [],
+      rateLimitReadsPerMin: 300,
+      rateLimitWritesPerMin: 30,
+      trustProxy: "none",
     });
     expect(() => loadConfig({ DATABASE_URL: URL_OK })).toThrow(/SOLANA_OPERATOR_KEYPAIR/);
     expect(loadConfig({ DATABASE_URL: URL_OK, SOLANA_OPERATOR_KEYPAIR: "/outside/operator.json" })).toMatchObject({
@@ -65,6 +68,21 @@ describe("loadConfig", () => {
     for (const h of ["127.0.0.1", "localhost", "::1"]) expect(() => loadConfig({ ...railway, HOST: h }), h).toThrow(/unreachable from Railway/);
     expect(() => loadConfig({ ...base, HOST: "http://0.0.0.0" })).toThrow(/bare IP address/);
     expect(describeConfig(loadConfig(railway))).toMatchObject({ platform: "railway", host: "0.0.0.0", port: 4321 });
+  });
+
+  it("reads the rate limits and which proxy header to trust (only Railway's, only on Railway by default)", () => {
+    const base = { ...NO_WORKER, DATABASE_URL: URL_OK };
+    const railway = { ...base, RAILWAY_ENVIRONMENT_ID: "test-env-id" };
+    expect(loadConfig(base)).toMatchObject({ rateLimitReadsPerMin: 300, rateLimitWritesPerMin: 30, trustProxy: "none" });
+    expect(loadConfig(railway).trustProxy).toBe("railway");
+    expect(loadConfig({ ...base, TRUST_PROXY: "railway" }).trustProxy).toBe("railway");
+    expect(() => loadConfig({ ...railway, TRUST_PROXY: "none" })).toThrow(/every client/);
+    for (const bad of ["x-forwarded-for", "true", "cloudflare"]) expect(() => loadConfig({ ...base, TRUST_PROXY: bad }), bad).toThrow(/railway or none/);
+    expect(loadConfig({ ...base, RATE_LIMIT_READS_PER_MIN: "60", RATE_LIMIT_WRITES_PER_MIN: "5" })).toMatchObject({
+      rateLimitReadsPerMin: 60,
+      rateLimitWritesPerMin: 5,
+    });
+    expect(() => loadConfig({ ...base, RATE_LIMIT_WRITES_PER_MIN: "0" })).toThrow(/between/);
   });
 
   it("requires a postgres DATABASE_URL and refuses the transaction pooler", () => {
@@ -317,6 +335,8 @@ describe("loadConfig", () => {
         "WORKER_MAX_ATTEMPTS",
         "WORKER_POLL_SECS",
         "CORS_ORIGINS",
+        "RATE_LIMIT_READS_PER_MIN",
+        "RATE_LIMIT_WRITES_PER_MIN",
       ].sort(),
     );
     expect(env["DATABASE_URL"]).toContain("PASSWORD@DB_HOST");

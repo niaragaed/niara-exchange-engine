@@ -3,6 +3,7 @@ import { bodyLimit } from "hono/body-limit";
 import { cors } from "hono/cors";
 import type { ContentfulStatusCode } from "hono/utils/http-status";
 import type { OrderService, Reply } from "./order-service.ts";
+import { RateLimiter } from "./rate-limit.ts";
 
 /**
  * HTTP API of the order service. TESTNET ONLY. Amounts are decimal strings in JSON.
@@ -20,6 +21,11 @@ import type { OrderService, Reply } from "./order-service.ts";
  *
  * Bodies above `maxBodyBytes` are refused with 413 before they are parsed.
  *
+ * Rate limits (`rateLimit`): per client IP (see rate-limit.ts), on every path,
+ * preflights included; POST has its own, stricter bucket. Over the limit: 429
+ * `rate_limited` with Retry-After (and the CORS header for a listed origin, so the
+ * site can read it).
+ *
  * CORS: only the exact origins of `corsOrigins` (CORS_ORIGINS) get
  * `Access-Control-Allow-Origin`, never `*`; methods GET, POST, OPTIONS; request header
  * content-type; no credentials. Preflights (OPTIONS) are answered 204 for every path.
@@ -29,15 +35,53 @@ export function createApp(
   options: {
     maxBodyBytes: number;
     corsOrigins?: readonly string[];
+    rateLimit?: {
+      readsPerMinute: number;
+      writesPerMinute: number;
+      /** The client's rate-limit key (its IP; see `clientKey`). */
+      key: (c: Context) => string;
+      /** Milliseconds; injected for tests. */
+      now?: () => number;
+    };
     log?: (event: string, data?: Record<string, unknown>) => void;
   },
 ): Hono {
   const app = new Hono();
   const send = (c: Context, r: Reply) => c.json(r.body, r.status as ContentfulStatusCode);
 
-  // First, so that preflights and error responses carry the CORS headers too.
   const origins = [...(options.corsOrigins ?? [])];
   if (origins.includes("*")) throw new Error("CORS origins must be listed one by one, never *");
+
+  // Before everything else, so that no request (preflights included) does any work
+  // over the limit.
+  if (options.rateLimit) {
+    const rl = options.rateLimit;
+    const now = rl.now ?? Date.now;
+    const reads = new RateLimiter({ perMinute: rl.readsPerMinute, now });
+    const writes = new RateLimiter({ perMinute: rl.writesPerMinute, now });
+    app.use("*", async (c, next) => {
+      const method = c.req.method;
+      const write = method !== "GET" && method !== "HEAD" && method !== "OPTIONS";
+      const verdict = (write ? writes : reads).take(rl.key(c));
+      if (verdict.ok) return next();
+      const origin = c.req.header("origin");
+      if (origin && origins.includes(origin)) {
+        c.header("Access-Control-Allow-Origin", origin);
+        c.header("Vary", "Origin");
+      }
+      c.header("Retry-After", String(verdict.retryAfterSecs));
+      return c.json(
+        {
+          error: "rate_limited",
+          detail: `too many ${write ? "order submissions or cancellations" : "requests"} from this address; retry in ${verdict.retryAfterSecs} s`,
+          retryAfterSecs: verdict.retryAfterSecs,
+        },
+        429,
+      );
+    });
+  }
+
+  // Then CORS, so that preflights and error responses carry the CORS headers too.
   app.use(
     "*",
     cors({
