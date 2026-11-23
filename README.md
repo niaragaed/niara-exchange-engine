@@ -134,6 +134,20 @@ single-instance lock). If the terminal is gone: `pkill -INT -f src/service/main.
 then `ss -ltn | grep 8787` must print nothing. A second `npm start` while one is
 running exits with `refused_to_start` (the advisory lock).
 
+### Deploying on Railway (https://api.niaraglobal.com)
+
+See [docs/deploy-railway.md](docs/deploy-railway.md), which covers:
+
+- the `Dockerfile` (Node 22, `node src/service/main.ts`);
+- the service settings, including exactly 1 replica and why;
+- every environment variable, secret or not;
+- the custom domain (CNAME and TXT records);
+- checks from outside: `/health`, `/v1/markets`, CORS, and the rate limit.
+
+On Railway, the operator keys come from `SOLANA_OPERATOR_KEYPAIR_JSON` and
+`EVM_OPERATOR_KEYSTORE_JSON` (their content), not file paths. The database is
+verified against the committed `config/supabase-ca.crt`.
+
 ## Solana devnet
 
 Program `B311xH3PcEx86gdRbuinrGrh1r9G2qzjDCji8uc6eD9v` (IDL vendored in

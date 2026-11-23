@@ -551,6 +551,52 @@ innocent side's quantity was lost: `filled_quantity` cannot decrease.
   rebuild refused the orders. Both now order by the table's numeric column; a
   regression test covers it.
 
+## Hosting on Railway (`Dockerfile`, `docs/deploy-railway.md`)
+
+Production testnet API at `https://api.niaraglobal.com`. Testnet only.
+
+- **Build: a Dockerfile, no `railway.json`.** Railway no longer lets new services
+  opt into config-as-code and stops reading `railway.json` / `railway.toml` on
+  2026-12-01. The Dockerfile pins Node 22.23.4 and the start command; the
+  healthcheck path, the replica count (1) and the restart policy are service
+  settings, documented in the deploy guide.
+- **Bind address and port.** Railway is detected by its injected `RAILWAY_*` ids.
+  There `HOST` defaults to 0.0.0.0 (a loopback `HOST` is refused) and `PORT` is
+  Railway's. Locally the default stays 127.0.0.1:8787.
+- **Keys from variable content.** `SOLANA_OPERATOR_KEYPAIR_JSON`,
+  `EVM_OPERATOR_KEYSTORE_JSON` (+ password), next to the file-path variables
+  for local use; both forms at once is refused. The content is redacted in
+  every printable form (raw, re-serialized, base58/hex/base64 of the key and
+  seed, the keystore's secret fields) and never appears in the logged config.
+  On a host, a key is only as safe as the host account: acceptable for devnet
+  and testnet keys, not for mainnet (KMS/HSM).
+- **Database TLS.** Supabase's root CA is public and committed
+  (`config/supabase-ca.crt`); it is the default `sslrootcert`. `sslmode` must be
+  `verify-full`. Railway connects through Supabase's session-mode pooler
+  (IPv4, port 5432, keeps the session lock); the direct host is IPv6-only.
+- **Rate limiting.** In-memory per-IP token buckets (the service is one
+  process): 300/min reads, 30/min POST by default. The client IP is Railway's
+  `X-Real-IP` only (`TRUST_PROXY=railway`, forced on Railway); `X-Forwarded-For`
+  is never read, because a client controls it. Railway documents that its edge
+  sets `X-Real-IP` but not that it replaces a client's copy: the deploy guide
+  has a one-time spoofing check. IPv6 is limited per /64. 429s carry the CORS
+  header so the site can show them.
+- **CORS.** Production origins `https://niaraglobal.com` and
+  `https://www.niaraglobal.com`. Besides `*` and wildcards, plain `http://`
+  origins are now refused except for localhost.
+- **Redeploys and the single-instance lock.** Railway starts the new deployment
+  before stopping the old one, and stops the old one only after the new one
+  passes `/health`. Refusing to start on a taken lock would therefore fail
+  every redeploy. A starting instance now waits in standby: `/health` answers
+  200 "standby" and the API 503 `starting`. It waits up to
+  `INSTANCE_LOCK_WAIT_SECS` (600 on Railway, 0 locally) and serves once the
+  lock is its. The lock remains the only way to serve or settle. The cost is a
+  few seconds of 503s per redeploy. A second replica would only ever stand by
+  (and receive traffic it answers with 503), so replicas must stay at 1.
+  Everything that can fail on a bad configuration runs before the service
+  listens, so a bad deploy fails before it goes live: database connection and
+  TLS, RPC chain checks, operator keys.
+
 ## Not done yet
 
 - HyperEVM testnet: no v1 deployment yet; its settings are in the config
