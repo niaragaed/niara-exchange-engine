@@ -1,3 +1,6 @@
+import { existsSync } from "node:fs";
+import { dirname, isAbsolute, join, resolve } from "node:path";
+import { fileURLToPath } from "node:url";
 import { base58, base64, hex } from "@scure/base";
 import { EVM_CHAIN_IDS, isEvmChainId, type EvmChainId } from "./evm/settings.ts";
 import { describeKeySource, type KeySource } from "./key-source.ts";
@@ -14,8 +17,14 @@ import { describeKeySource, type KeySource } from "./key-source.ts";
  */
 
 export interface ServiceConfig {
-  /** Postgres connection string (direct or session mode, never the 6543 pooler). Secret. */
+  /**
+   * Postgres connection string (direct or session mode, never the 6543 pooler), with
+   * sslmode=verify-full and an absolute sslrootcert (by default the committed Supabase
+   * CA, config/supabase-ca.crt). Secret.
+   */
   databaseUrl: string;
+  /** True when the server is verified against the committed config/supabase-ca.crt. */
+  databaseCaCommitted: boolean;
   /** Where the service runs: `railway` when Railway's injected variables are present. */
   platform: "railway" | "local";
   /** Bind address: HOST, else 0.0.0.0 on Railway (its proxy must reach it), else 127.0.0.1. */
@@ -144,7 +153,32 @@ function int(env: Env, name: string, fallback: number, min: number, max: number)
   return v;
 }
 
-function checkDatabaseUrl(raw: string | undefined): string {
+const REPO_ROOT = resolve(dirname(fileURLToPath(import.meta.url)), "..");
+
+/** Supabase's root CA (public; the dashboard's Database settings, SSL), committed so no file has to be uploaded to a host. */
+export const SUPABASE_CA_PATH = join(REPO_ROOT, "config", "supabase-ca.crt");
+
+/**
+ * TLS of the database connection: the server is always verified (sslmode=verify-full;
+ * a weaker mode is refused, and an absent one is set). sslrootcert defaults to the
+ * committed Supabase CA; a relative sslrootcert is resolved against the repository
+ * (node-postgres would read it relative to the working directory).
+ */
+function withVerifiedTls(raw: string, url: URL): { databaseUrl: string; databaseCaCommitted: boolean } {
+  const mode = url.searchParams.get("sslmode");
+  if (mode !== null && mode !== "verify-full") {
+    throw new ConfigError("DATABASE_URL: sslmode must be verify-full (or absent, then set): the server certificate is always verified");
+  }
+  const given = url.searchParams.get("sslrootcert");
+  const ca = given ? (isAbsolute(given) ? given : resolve(REPO_ROOT, given)) : SUPABASE_CA_PATH;
+  if (!existsSync(ca)) throw new ConfigError("DATABASE_URL: the sslrootcert file does not exist");
+  if (mode === "verify-full" && given === ca) return { databaseUrl: raw, databaseCaCommitted: ca === SUPABASE_CA_PATH };
+  url.searchParams.set("sslmode", "verify-full");
+  url.searchParams.set("sslrootcert", ca);
+  return { databaseUrl: url.toString(), databaseCaCommitted: ca === SUPABASE_CA_PATH };
+}
+
+function checkDatabaseUrl(raw: string | undefined): { databaseUrl: string; databaseCaCommitted: boolean } {
   if (!raw) throw new ConfigError("DATABASE_URL is required");
   let url: URL;
   try {
@@ -161,7 +195,7 @@ function checkDatabaseUrl(raw: string | undefined): string {
         "advisory lock: use the direct or session-mode connection (port 5432)",
     );
   }
-  return raw;
+  return withVerifiedTls(raw, url);
 }
 
 /** Refuses any NEXT_PUBLIC_* variable that names or carries a server secret. */
@@ -178,7 +212,7 @@ function checkNoPublicSecrets(env: Env, secrets: readonly string[]): void {
 }
 
 export function loadConfig(env: Env = process.env): ServiceConfig {
-  const databaseUrl = checkDatabaseUrl(env["DATABASE_URL"]);
+  const { databaseUrl, databaseCaCommitted } = checkDatabaseUrl(env["DATABASE_URL"]);
   const password = decodeURIComponent(new URL(databaseUrl).password);
   // A private RPC URL can carry an API key; the public RPCs are not secrets.
   checkNoPublicSecrets(env, [
@@ -192,6 +226,7 @@ export function loadConfig(env: Env = process.env): ServiceConfig {
   const platform = onRailway(env) ? "railway" : "local";
   return {
     databaseUrl,
+    databaseCaCommitted,
     platform,
     host: listenHost(env["HOST"], platform),
     port: int(env, "PORT", 8787, 1, 65535),
@@ -332,6 +367,7 @@ function bool(env: Env, name: string, fallback: boolean): boolean {
 export function describeConfig(c: ServiceConfig): Record<string, string | number | boolean | null> {
   const {
     databaseUrl: _db,
+    databaseCaCommitted,
     solanaRpcUrl,
     evmOperatorKeystorePassword: pw,
     evmSettlementChains,
@@ -349,6 +385,7 @@ export function describeConfig(c: ServiceConfig): Record<string, string | number
     evmSettlementChains: evmSettlementChains.join(",") || "(none)",
     evmOperatorKeystorePassword: pw ? "(set, not shown)" : null,
     databaseUrl: "(set, not shown)",
+    databaseTls: databaseCaCommitted ? "verify-full, committed config/supabase-ca.crt" : "verify-full, custom sslrootcert (not shown)",
     solanaRpcUrl: solanaRpcUrl === "https://api.devnet.solana.com" ? solanaRpcUrl : "(custom, not shown)",
   };
 }

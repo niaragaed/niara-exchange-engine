@@ -3,7 +3,11 @@ import { join } from "node:path";
 import { Keypair } from "@solana/web3.js";
 import { base58 } from "@scure/base";
 import { describe, expect, it } from "vitest";
-import { ConfigError, describeConfig, loadConfig, redactSecrets } from "../src/config.ts";
+import { X509Certificate } from "node:crypto";
+import { mkdtempSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { parse as parsePgUrl } from "pg-connection-string";
+import { ConfigError, SUPABASE_CA_PATH, describeConfig, loadConfig, redactSecrets } from "../src/config.ts";
 
 // TEST ONLY: a placeholder URL, not a real database or password.
 const URL_OK = "postgresql://test_login:test-password-123@db.example.invalid:5432/postgres";
@@ -14,7 +18,8 @@ const NO_WORKER = { WORKER_ENABLED: "off" };
 describe("loadConfig", () => {
   it("reads env vars with defaults", () => {
     expect(loadConfig({ DATABASE_URL: URL_OK, WORKER_ENABLED: "off" })).toEqual({
-      databaseUrl: URL_OK,
+      databaseUrl: `${URL_OK}?sslmode=verify-full&sslrootcert=${encodeURIComponent(SUPABASE_CA_PATH)}`,
+      databaseCaCommitted: true,
       platform: "local",
       host: "127.0.0.1",
       port: 8787,
@@ -67,6 +72,56 @@ describe("loadConfig", () => {
     expect(() => loadConfig({ DATABASE_URL: "not a url" })).toThrow(/not a URL/);
     expect(() => loadConfig({ DATABASE_URL: "https://example.invalid" })).toThrow(/postgres/);
     expect(() => loadConfig({ ...NO_WORKER, DATABASE_URL: URL_OK.replace(":5432", ":6543") })).toThrow(/advisory lock/);
+  });
+
+  describe("database TLS: the committed Supabase CA", () => {
+    const base = { ...NO_WORKER };
+    const caOf = (url: string) => new URL(url).searchParams.get("sslrootcert");
+
+    it("commits Supabase's public root CA (a certificate only, no key) under config/", () => {
+      const pem = readFileSync(SUPABASE_CA_PATH, "utf8");
+      expect(SUPABASE_CA_PATH.endsWith(join("config", "supabase-ca.crt"))).toBe(true);
+      expect(pem.match(/-----BEGIN [A-Z ]+-----/g)).toEqual(["-----BEGIN CERTIFICATE-----"]);
+      expect(pem).not.toMatch(/PRIVATE KEY/);
+      const cert = new X509Certificate(pem);
+      expect(cert.subject).toContain("CN=Supabase Root 2021 CA");
+      expect(cert.ca).toBe(true);
+      expect(cert.checkIssued(cert)).toBe(true); // a self-signed root
+      expect(new Date(cert.validTo).getTime()).toBeGreaterThan(Date.now());
+    });
+
+    it("verifies the server against it by default: sslmode=verify-full and an absolute sslrootcert", () => {
+      const c = loadConfig({ ...base, DATABASE_URL: URL_OK });
+      expect(caOf(c.databaseUrl)).toBe(SUPABASE_CA_PATH);
+      expect(new URL(c.databaseUrl).searchParams.get("sslmode")).toBe("verify-full");
+      expect(new URL(c.databaseUrl).password).toBe("test-password-123");
+      // What node-postgres makes of it: the CA loaded, certificate checks on.
+      const ssl = parsePgUrl(c.databaseUrl).ssl as { ca?: string; rejectUnauthorized?: boolean };
+      expect(ssl.ca).toBe(readFileSync(SUPABASE_CA_PATH, "utf8"));
+      expect(ssl.rejectUnauthorized).not.toBe(false);
+      expect(describeConfig(c).databaseTls).toBe("verify-full, committed config/supabase-ca.crt");
+    });
+
+    it("resolves a relative sslrootcert against the repository and keeps an absolute one", () => {
+      const rel = loadConfig({ ...base, DATABASE_URL: `${URL_OK}?sslmode=verify-full&sslrootcert=config/supabase-ca.crt` });
+      expect(caOf(rel.databaseUrl)).toBe(SUPABASE_CA_PATH);
+      expect(rel.databaseCaCommitted).toBe(true);
+      const dir = mkdtempSync(join(tmpdir(), "niara-test-ca-"));
+      const own = join(dir, "ca.crt");
+      writeFileSync(own, readFileSync(SUPABASE_CA_PATH));
+      const abs = `${URL_OK}?sslmode=verify-full&sslrootcert=${own}`;
+      const c = loadConfig({ ...base, DATABASE_URL: abs });
+      expect(c.databaseUrl).toBe(abs);
+      expect(c.databaseCaCommitted).toBe(false);
+      expect(JSON.stringify(describeConfig(c))).not.toContain(dir);
+    });
+
+    it("refuses a weaker sslmode and a missing CA file", () => {
+      for (const mode of ["disable", "prefer", "require", "verify-ca"]) {
+        expect(() => loadConfig({ ...base, DATABASE_URL: `${URL_OK}?sslmode=${mode}` }), mode).toThrow(/verify-full/);
+      }
+      expect(() => loadConfig({ ...base, DATABASE_URL: `${URL_OK}?sslrootcert=/nonexistent/ca.crt` })).toThrow(/sslrootcert file does not exist/);
+    });
   });
 
   it("reads the Solana RPC and the delegate check switch, and never shows a custom RPC URL", () => {
