@@ -9,7 +9,7 @@ import { SYSTEM_PROGRAM_ID, TOKEN_2022_PROGRAM_ID, pdas } from "../../src/solana
 import { SettlementFailure } from "../../src/solana/errors.ts";
 import { decodeSettledEvent, fetchSettledEvent } from "../../src/solana/events.ts";
 import { PROGRAM_ID, idlInstruction } from "../../src/solana/idl.ts";
-import { KeypairFileError, REPO_ROOT, loadKeypairFile } from "../../src/solana/keypair.ts";
+import { KeypairFileError, REPO_ROOT, keypairFromJson, loadKeypairFile, loadKeypairSource } from "../../src/solana/keypair.ts";
 import { settledEventData } from "../solana/mock-rpc.ts";
 import { world, type World } from "../solana/world.ts";
 
@@ -221,5 +221,29 @@ describe("operator keypair file", () => {
     expect(message).toMatch(/not a 64-byte keypair/);
     expect(message).not.toContain("[1,2,3]");
     expect(() => loadKeypairFile(join(dir, "missing.json"), "operator")).toThrow(/not found/);
+  });
+
+  it("loads the same keypair from a variable's content (SOLANA_OPERATOR_KEYPAIR_JSON), never quoting it in errors", () => {
+    const json = JSON.stringify(Array.from(kp.secretKey));
+    const fromEnv = loadKeypairSource({ from: "env", variable: "SOLANA_OPERATOR_KEYPAIR_JSON", json }, "operator");
+    expect(fromEnv.publicKey.equals(kp.publicKey)).toBe(true);
+    expect(loadKeypairSource({ from: "file", path }, "operator").publicKey.equals(kp.publicKey)).toBe(true);
+    for (const [bad, why] of [
+      ["[1,2,3]", /not a 64-byte keypair/],
+      [json.slice(0, -1), /not valid JSON/],
+      [JSON.stringify([...Array(64)].map(() => 256)), /not a 64-byte keypair/],
+    ] as const) {
+      let message = "";
+      try {
+        loadKeypairSource({ from: "env", variable: "SOLANA_OPERATOR_KEYPAIR_JSON", json: bad }, "operator");
+      } catch (e) {
+        expect(e).toBeInstanceOf(KeypairFileError);
+        message = (e as Error).message;
+      }
+      expect(message).toMatch(why);
+      expect(message).toContain("(SOLANA_OPERATOR_KEYPAIR_JSON)");
+      expect(message).not.toContain(bad.slice(0, 8));
+    }
+    expect(() => keypairFromJson(JSON.stringify(Array(64).fill(0)), "zero key")).not.toThrow(/valid JSON/);
   });
 });

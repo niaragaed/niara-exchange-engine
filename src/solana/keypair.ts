@@ -1,11 +1,13 @@
 import { readFileSync, realpathSync, statSync } from "node:fs";
 import { dirname, resolve, sep } from "node:path";
 import { Keypair } from "@solana/web3.js";
+import type { KeySource } from "../key-source.ts";
 
 /**
- * Loads a keypair file (Solana CLI format: a JSON array of 64 bytes) that must live
- * OUTSIDE this repository and be readable by its owner only (mode 600 or stricter).
- * Errors never quote the file's content. The secret key is never logged.
+ * Loads a keypair (Solana CLI format: a JSON array of 64 bytes) from a file that must
+ * live OUTSIDE this repository and be readable by its owner only (mode 600 or
+ * stricter), or from a variable holding that JSON (SOLANA_OPERATOR_KEYPAIR_JSON on a
+ * host such as Railway). Errors never quote the content. The secret key is never logged.
  */
 
 export const REPO_ROOT = resolve(dirname(new URL(import.meta.url).pathname), "..", "..");
@@ -31,18 +33,28 @@ export function loadKeypairFile(path: string, what: string, repoRoot: string = R
   if ((statSync(real).mode & 0o077) !== 0) {
     throw new KeypairFileError(`${what} keypair file ${path} is readable by others: chmod 600 it`);
   }
+  return keypairFromJson(readFileSync(real, "utf8"), `${what} keypair file ${path}`);
+}
+
+/** Parses a 64-byte keypair from JSON text. `label` names the source in errors; the text is never quoted. */
+export function keypairFromJson(text: string, label: string): Keypair {
   let bytes: unknown;
   try {
-    bytes = JSON.parse(readFileSync(real, "utf8"));
+    bytes = JSON.parse(text);
   } catch {
-    throw new KeypairFileError(`${what} keypair file ${path} is not valid JSON`);
+    throw new KeypairFileError(`${label} is not valid JSON`);
   }
   if (!Array.isArray(bytes) || bytes.length !== 64 || !bytes.every((b) => Number.isInteger(b) && b >= 0 && b <= 255)) {
-    throw new KeypairFileError(`${what} keypair file ${path} is not a 64-byte keypair`);
+    throw new KeypairFileError(`${label} is not a 64-byte keypair`);
   }
   try {
     return Keypair.fromSecretKey(Uint8Array.from(bytes as number[]));
   } catch {
-    throw new KeypairFileError(`${what} keypair file ${path} does not hold a valid ed25519 keypair`);
+    throw new KeypairFileError(`${label} does not hold a valid ed25519 keypair`);
   }
+}
+
+/** The keypair of a file or variable source. */
+export function loadKeypairSource(source: KeySource, what: string, repoRoot: string = REPO_ROOT): Keypair {
+  return source.from === "file" ? loadKeypairFile(source.path, what, repoRoot) : keypairFromJson(source.json, `${what} keypair (${source.variable})`);
 }

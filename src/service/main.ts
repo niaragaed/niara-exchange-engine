@@ -12,10 +12,10 @@ import type { SettlementAdapter } from "../adapters/settlement-adapter.ts";
 import type { ChainId } from "../chains.ts";
 import { connectEvm, httpTransport, rpcUrlFor, type EvmClient } from "../evm/client.ts";
 import { evmCoverageChecker } from "../evm/coverage.ts";
-import { loadKeystoreFile } from "../evm/keystore.ts";
+import { loadKeystoreSource } from "../evm/keystore.ts";
 import { deployedChain, loadEvmSettings, type DeployedEvmChain } from "../evm/settings.ts";
 import type { CoverageChecker } from "../solana/coverage.ts";
-import { loadKeypairFile } from "../solana/keypair.ts";
+import { loadKeypairSource } from "../solana/keypair.ts";
 import { SettlementWorker } from "../worker/worker.ts";
 import { createApp } from "./http.ts";
 import { NotSingleInstanceError, OrderService, SchemaNotReadyError, ServiceRoleError } from "./order-service.ts";
@@ -118,15 +118,16 @@ async function main(): Promise<void> {
 
   // Settlement worker: in this process, so the advisory lock makes it the only one.
   let worker: SettlementWorker | undefined;
-  if (config.workerEnabled && config.operatorKeypairPath) {
-    const operator = loadKeypairFile(config.operatorKeypairPath, "settlement operator");
+  if (config.workerEnabled && config.solanaOperatorKeypair) {
+    // From a file (local) or SOLANA_OPERATOR_KEYPAIR_JSON (Railway); never logged.
+    const operator = loadKeypairSource(config.solanaOperatorKeypair, "settlement operator");
     const adapters: Partial<Record<ChainId, SettlementAdapter>> = {
       "solana-devnet": await SolanaSettlementAdapter.create({ rpc: solana, operator }),
     };
     log("worker_starting", { chain: "solana-devnet", operator: operator.publicKey.toBase58() });
     if (evm.length > 0) {
       // The EVM operator: decrypted once, in memory only; its key and password are never logged.
-      const evmOperator = loadKeystoreFile(config.evmOperatorKeystore!, config.evmOperatorKeystorePassword!, "EVM settlement operator");
+      const evmOperator = loadKeystoreSource(config.evmOperatorKeystore!, config.evmOperatorKeystorePassword!, "EVM settlement operator");
       for (const e of evm) {
         adapters[e.chain.chain] = await EvmSettlementAdapter.create({ client: e.client, settings: e.chain, operator: evmOperator });
         log("worker_starting", { chain: e.chain.chain, operator: evmOperator.address });

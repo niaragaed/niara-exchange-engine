@@ -4,6 +4,7 @@ import { resolve, sep } from "node:path";
 import { bytesToHex, concatBytes, hexToBytes, keccak256 } from "viem";
 import { privateKeyToAccount, type PrivateKeyAccount } from "viem/accounts";
 import { REPO_ROOT } from "../solana/keypair.ts";
+import type { KeySource } from "../key-source.ts";
 
 /**
  * Loads an EVM signer from an encrypted Foundry keystore (Web3 Secret Storage v3:
@@ -89,4 +90,11 @@ export function loadKeystoreFile(path: string, password: string | undefined, wha
   const root = realpathSync(repoRoot);
   if ((real + sep).startsWith(root + sep)) throw new KeystoreError(`${what} keystore is inside the repository: keys must stay outside it`);
   return decryptKeystore(readFileSync(real, "utf8"), password, what);
+}
+
+/** The account of a file or variable (EVM_OPERATOR_KEYSTORE_JSON) keystore source. */
+export function loadKeystoreSource(source: KeySource, password: string | undefined, what: string, repoRoot: string = REPO_ROOT): PrivateKeyAccount {
+  if (source.from === "file") return loadKeystoreFile(source.path, password, what, repoRoot);
+  if (!password) throw new KeystoreError(`${what} keystore password is not set`);
+  return decryptKeystore(source.json, password, `${what} (${source.variable})`);
 }

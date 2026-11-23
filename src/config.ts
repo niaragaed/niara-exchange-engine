@@ -1,4 +1,6 @@
+import { base58, base64, hex } from "@scure/base";
 import { EVM_CHAIN_IDS, isEvmChainId, type EvmChainId } from "./evm/settings.ts";
+import { describeKeySource, type KeySource } from "./key-source.ts";
 
 /**
  * Order service configuration: environment variables only (no config file, no
@@ -36,16 +38,22 @@ export interface ServiceConfig {
   delegateCheck: boolean;
   /** The settlement worker runs in this process (it needs the operator keypair). */
   workerEnabled: boolean;
-  /** Path of the settlement operator's keypair file, outside the repository (mode 600). */
-  operatorKeypairPath: string | null;
+  /**
+   * The settlement operator's keypair: SOLANA_OPERATOR_KEYPAIR (path of a file outside
+   * the repository, mode 600) or SOLANA_OPERATOR_KEYPAIR_JSON (its content). Secret.
+   */
+  solanaOperatorKeypair: KeySource | null;
   workerPollSecs: number;
   workerMaxAttempts: number;
   /** A settlement is sent only if it can land at least this long before expires_at. */
   settleDeadlineMarginSecs: number;
   /** EVM testnets the worker settles on (and checks allowances on); empty = none. */
   evmSettlementChains: EvmChainId[];
-  /** Path of the EVM operator's encrypted Foundry keystore, outside the repository. */
-  evmOperatorKeystore: string | null;
+  /**
+   * The EVM operator's encrypted Foundry keystore: EVM_OPERATOR_KEYSTORE (path, outside
+   * the repository) or EVM_OPERATOR_KEYSTORE_JSON (its content).
+   */
+  evmOperatorKeystore: KeySource | null;
   /** Its password. Secret. */
   evmOperatorKeystorePassword: string | null;
   /**
@@ -85,6 +93,46 @@ function passwordValues(env: Env): string[] {
 
 function privateRpcValues(env: Env): string[] {
   return ["SOLANA_RPC_URL", ...EVM_RPC_VARS].map((n) => env[n] ?? "").filter((v) => v && !PUBLIC_RPCS.has(v));
+}
+
+/** Variables that hold key material itself (hosted deployments, where no file can be uploaded). */
+const KEY_JSON_VARS = ["SOLANA_OPERATOR_KEYPAIR_JSON", "EVM_OPERATOR_KEYSTORE_JSON"] as const;
+
+/**
+ * Every form in which a key variable's content could reach a log line: the raw text,
+ * re-serialized JSON, and for a 64-byte Solana keypair its base58, hex and base64
+ * encodings (whole key and 32-byte seed); for a keystore, each of its secret fields.
+ */
+function keyMaterialValues(env: Env): string[] {
+  const out: string[] = [];
+  for (const name of KEY_JSON_VARS) {
+    const raw = env[name];
+    if (!raw) continue;
+    out.push(raw, raw.trim());
+    let parsed: unknown;
+    try {
+      parsed = JSON.parse(raw);
+    } catch {
+      continue;
+    }
+    out.push(JSON.stringify(parsed), JSON.stringify(parsed, null, 2));
+    if (Array.isArray(parsed) && parsed.length === 64 && parsed.every((b) => Number.isInteger(b) && b >= 0 && b <= 255)) {
+      const bytes = Uint8Array.from(parsed as number[]);
+      out.push(parsed.join(", "), parsed.join(","));
+      for (const b of [bytes, bytes.subarray(0, 32)]) out.push(base58.encode(b), hex.encode(b), `0x${hex.encode(b)}`, base64.encode(b));
+    } else if (parsed && typeof parsed === "object") {
+      const crypto = (parsed as { crypto?: unknown; Crypto?: unknown }).crypto ?? (parsed as { Crypto?: unknown }).Crypto;
+      const walk = (v: unknown): void => {
+        if (typeof v === "string" && v.length >= 16) {
+          const bare = v.replace(/^0x/i, "");
+          out.push(v, bare, `0x${bare}`);
+        }
+        else if (v && typeof v === "object") Object.values(v).forEach(walk);
+      };
+      walk(crypto);
+    }
+  }
+  return out.filter((v) => v !== "");
 }
 
 function int(env: Env, name: string, fallback: number, min: number, max: number): number {
@@ -133,7 +181,14 @@ export function loadConfig(env: Env = process.env): ServiceConfig {
   const databaseUrl = checkDatabaseUrl(env["DATABASE_URL"]);
   const password = decodeURIComponent(new URL(databaseUrl).password);
   // A private RPC URL can carry an API key; the public RPCs are not secrets.
-  checkNoPublicSecrets(env, [databaseUrl, password, env["SUPABASE_SERVICE_ROLE_KEY"] ?? "", ...privateRpcValues(env), ...passwordValues(env)]);
+  checkNoPublicSecrets(env, [
+    databaseUrl,
+    password,
+    env["SUPABASE_SERVICE_ROLE_KEY"] ?? "",
+    ...privateRpcValues(env),
+    ...passwordValues(env),
+    ...keyMaterialValues(env),
+  ]);
   const platform = onRailway(env) ? "railway" : "local";
   return {
     databaseUrl,
@@ -204,10 +259,13 @@ function evmConfig(env: Env) {
   for (const c of chains) {
     if (!isEvmChainId(c)) throw new ConfigError(`EVM_SETTLEMENT_CHAINS: unknown EVM chain ${c} (one of ${EVM_CHAIN_IDS.join(", ")})`);
   }
-  const keystore = env["EVM_OPERATOR_KEYSTORE"] || null;
+  const keystore = keySource(env, "EVM_OPERATOR_KEYSTORE", "EVM_OPERATOR_KEYSTORE_JSON");
   const password = env["EVM_OPERATOR_KEYSTORE_PASSWORD"] || null;
   if (chains.length > 0 && bool(env, "WORKER_ENABLED", true) && (!keystore || !password)) {
-    throw new ConfigError("EVM_SETTLEMENT_CHAINS is set but EVM_OPERATOR_KEYSTORE or EVM_OPERATOR_KEYSTORE_PASSWORD is not");
+    throw new ConfigError(
+      "EVM_SETTLEMENT_CHAINS is set but the operator keystore (EVM_OPERATOR_KEYSTORE or EVM_OPERATOR_KEYSTORE_JSON) " +
+        "or EVM_OPERATOR_KEYSTORE_PASSWORD is not",
+    );
   }
   for (const name of EVM_RPC_VARS) {
     const v = env[name];
@@ -222,17 +280,29 @@ function evmConfig(env: Env) {
 
 function workerConfig(env: Env) {
   const workerEnabled = bool(env, "WORKER_ENABLED", true);
-  const operatorKeypairPath = env["SOLANA_OPERATOR_KEYPAIR"] || null;
-  if (workerEnabled && !operatorKeypairPath) {
-    throw new ConfigError("WORKER_ENABLED is on but SOLANA_OPERATOR_KEYPAIR is not set (or set WORKER_ENABLED=off)");
+  const solanaOperatorKeypair = keySource(env, "SOLANA_OPERATOR_KEYPAIR", "SOLANA_OPERATOR_KEYPAIR_JSON");
+  if (workerEnabled && !solanaOperatorKeypair) {
+    throw new ConfigError(
+      "WORKER_ENABLED is on but neither SOLANA_OPERATOR_KEYPAIR (file path) nor SOLANA_OPERATOR_KEYPAIR_JSON (content) is set " +
+        "(or set WORKER_ENABLED=off)",
+    );
   }
   return {
     workerEnabled,
-    operatorKeypairPath,
+    solanaOperatorKeypair,
     workerPollSecs: int(env, "WORKER_POLL_SECS", 5, 1, 3_600),
     workerMaxAttempts: int(env, "WORKER_MAX_ATTEMPTS", 6, 1, 20),
     settleDeadlineMarginSecs: int(env, "SETTLE_DEADLINE_MARGIN_SECS", 90, 30, 3_600),
   };
+}
+
+/** A key from a file path variable or a content variable; both set is ambiguous and refused. */
+function keySource(env: Env, pathVar: string, jsonVar: string): KeySource | null {
+  const path = (env[pathVar] ?? "").trim();
+  const json = env[jsonVar] ?? "";
+  if (path !== "" && json.trim() !== "") throw new ConfigError(`set ${pathVar} (file path) or ${jsonVar} (content), not both`);
+  if (json.trim() !== "") return { from: "env", variable: jsonVar, json };
+  return path !== "" ? { from: "file", path } : null;
 }
 
 function rpcUrl(raw: string | undefined): string {
@@ -260,9 +330,21 @@ function bool(env: Env, name: string, fallback: boolean): boolean {
  * database, password) and no RPC URL, which may hold an API key.
  */
 export function describeConfig(c: ServiceConfig): Record<string, string | number | boolean | null> {
-  const { databaseUrl: _db, solanaRpcUrl, evmOperatorKeystorePassword: pw, evmSettlementChains, corsOrigins, ...rest } = c;
+  const {
+    databaseUrl: _db,
+    solanaRpcUrl,
+    evmOperatorKeystorePassword: pw,
+    evmSettlementChains,
+    corsOrigins,
+    solanaOperatorKeypair,
+    evmOperatorKeystore,
+    ...rest
+  } = c;
   return {
     ...rest,
+    // Key sources: a file's path, or only the NAME of the variable holding the key.
+    solanaOperatorKeypair: describeKeySource(solanaOperatorKeypair),
+    evmOperatorKeystore: describeKeySource(evmOperatorKeystore),
     corsOrigins: corsOrigins.join(",") || "(none)",
     evmSettlementChains: evmSettlementChains.join(",") || "(none)",
     evmOperatorKeystorePassword: pw ? "(set, not shown)" : null,
@@ -274,7 +356,10 @@ export function describeConfig(c: ServiceConfig): Record<string, string | number
 /**
  * Removes every secret-bearing value from a text before it is logged: the database
  * URL and each of its parts, private Solana and EVM RPC URLs and their path/query (API
- * keys), every *PASSWORD* variable (keystore passwords), and the Supabase service role key. Error messages from drivers can quote any of them.
+ * keys), every *PASSWORD* variable (keystore passwords), the Supabase service role key,
+ * and the operator keys given as content (SOLANA_OPERATOR_KEYPAIR_JSON,
+ * EVM_OPERATOR_KEYSTORE_JSON) in each form they could be printed in. Error messages
+ * from drivers can quote any of them.
  */
 export function redactSecrets(text: string, env: Readonly<Record<string, string | undefined>> = process.env): string {
   const secrets: string[] = [];
@@ -300,7 +385,7 @@ export function redactSecrets(text: string, env: Readonly<Record<string, string 
     }
   }
   if (env["SUPABASE_SERVICE_ROLE_KEY"]) secrets.push(env["SUPABASE_SERVICE_ROLE_KEY"]);
-  secrets.push(...passwordValues(env));
+  secrets.push(...passwordValues(env), ...keyMaterialValues(env));
   let out = text;
   for (const s of secrets.filter((x) => x.length >= 3).sort((a, b) => b.length - a.length)) out = out.split(s).join("***");
   return out;

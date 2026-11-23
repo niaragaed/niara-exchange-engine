@@ -5,7 +5,7 @@ import { join } from "node:path";
 import { describe, expect, it } from "vitest";
 import { bytesToHex, concatBytes, hexToBytes, keccak256 } from "viem";
 import { generatePrivateKey, privateKeyToAccount } from "viem/accounts";
-import { KeystoreError, decryptKeystore, loadKeystoreFile } from "../../src/evm/keystore.ts";
+import { KeystoreError, decryptKeystore, loadKeystoreFile, loadKeystoreSource } from "../../src/evm/keystore.ts";
 
 /**
  * Foundry keystores (Web3 Secret Storage v3, scrypt + AES-128-CTR), written here the way
@@ -81,5 +81,21 @@ describe("Foundry keystore", () => {
     // Pretend the temp directory is the repository.
     expect(() => loadKeystoreFile(path, PASSWORD, "test operator", dir)).toThrow(/inside the repository/);
     expect(bytesToHex(hexToBytes(key))).toBe(key);
+  });
+
+  it("loads the same account from a variable's content (EVM_OPERATOR_KEYSTORE_JSON), and requires the password", () => {
+    const json = keystore(key, PASSWORD);
+    const source = { from: "env", variable: "EVM_OPERATOR_KEYSTORE_JSON", json } as const;
+    expect(loadKeystoreSource(source, PASSWORD, "test operator").address).toBe(address);
+    expect(() => loadKeystoreSource(source, undefined, "test operator")).toThrow(/password is not set/);
+    expect(() => loadKeystoreSource(source, "wrong", "test operator")).toThrow(/\(EVM_OPERATOR_KEYSTORE_JSON\) keystore: wrong password/);
+    let message = "";
+    try {
+      loadKeystoreSource({ ...source, json: json.slice(0, 40) }, PASSWORD, "test operator");
+    } catch (e) {
+      message = (e as Error).message;
+    }
+    expect(message).toMatch(/not valid JSON/);
+    expect(message).not.toContain(json.slice(0, 20));
   });
 });

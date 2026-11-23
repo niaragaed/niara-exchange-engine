@@ -1,10 +1,13 @@
 import { readFileSync } from "node:fs";
 import { join } from "node:path";
+import { Keypair } from "@solana/web3.js";
+import { base58 } from "@scure/base";
 import { describe, expect, it } from "vitest";
 import { ConfigError, describeConfig, loadConfig, redactSecrets } from "../src/config.ts";
 
 // TEST ONLY: a placeholder URL, not a real database or password.
 const URL_OK = "postgresql://test_login:test-password-123@db.example.invalid:5432/postgres";
+const bs58 = (b: Uint8Array) => base58.encode(b);
 // Most cases run without the worker (it needs an operator keypair path).
 const NO_WORKER = { WORKER_ENABLED: "off" };
 
@@ -23,7 +26,7 @@ describe("loadConfig", () => {
       solanaRpcUrl: "https://api.devnet.solana.com",
       delegateCheck: true,
       workerEnabled: false,
-      operatorKeypairPath: null,
+      solanaOperatorKeypair: null,
       workerPollSecs: 5,
       workerMaxAttempts: 6,
       settleDeadlineMarginSecs: 90,
@@ -35,7 +38,7 @@ describe("loadConfig", () => {
     expect(() => loadConfig({ DATABASE_URL: URL_OK })).toThrow(/SOLANA_OPERATOR_KEYPAIR/);
     expect(loadConfig({ DATABASE_URL: URL_OK, SOLANA_OPERATOR_KEYPAIR: "/outside/operator.json" })).toMatchObject({
       workerEnabled: true,
-      operatorKeypairPath: "/outside/operator.json",
+      solanaOperatorKeypair: { from: "file", path: "/outside/operator.json" },
     });
     expect(loadConfig({ DATABASE_URL: URL_OK, WORKER_ENABLED: "off", PORT: "9000", MAX_OPEN_ORDERS_PER_WALLET: "5" })).toMatchObject({
       port: 9000,
@@ -130,7 +133,7 @@ describe("loadConfig", () => {
     expect(() => loadConfig(worker)).toThrow(/EVM_OPERATOR_KEYSTORE/);
     expect(() => loadConfig({ ...worker, EVM_OPERATOR_KEYSTORE: "/outside/ks" })).toThrow(/EVM_OPERATOR_KEYSTORE_PASSWORD/);
     const c = loadConfig({ ...worker, EVM_OPERATOR_KEYSTORE: "/outside/ks", EVM_OPERATOR_KEYSTORE_PASSWORD: "test-keystore-pw" });
-    expect(c).toMatchObject({ evmSettlementChains: ["base-sepolia"], evmOperatorKeystore: "/outside/ks" });
+    expect(c).toMatchObject({ evmSettlementChains: ["base-sepolia"], evmOperatorKeystore: { from: "file", path: "/outside/ks" } });
     expect(JSON.stringify(describeConfig(c))).not.toContain("test-keystore-pw");
     expect(() => loadConfig({ ...base, BASE_SEPOLIA_RPC_URL: "ftp://x" })).toThrow(/BASE_SEPOLIA_RPC_URL/);
   });
@@ -151,6 +154,74 @@ describe("loadConfig", () => {
     const out = redactSecrets("pw test-keystore-pw, test-investor-pw; GET https://tempo.example.invalid/v1/test-key-xyz", env);
     for (const part of ["test-keystore-pw", "test-investor-pw", "test-key-xyz", "tempo.example.invalid"]) expect(out).not.toContain(part);
     expect(redactSecrets("https://sepolia.base.org is public", env)).toBe("https://sepolia.base.org is public");
+  });
+
+  describe("operator keys as content (hosted deployments)", () => {
+    // TEST ONLY: a throwaway keypair and a fake keystore, generated per run.
+    const kp = Keypair.generate();
+    const solanaJson = JSON.stringify(Array.from(kp.secretKey));
+    const keystoreJson = JSON.stringify({
+      version: 3,
+      address: "0000000000000000000000000000000000000001",
+      crypto: { cipher: "aes-128-ctr", ciphertext: "c1".repeat(32), cipherparams: { iv: "1v".repeat(8) }, kdf: "scrypt", kdfparams: { salt: "5a".repeat(32) }, mac: "3c".repeat(32) },
+    });
+    const env = {
+      DATABASE_URL: URL_OK,
+      SOLANA_OPERATOR_KEYPAIR_JSON: solanaJson,
+      EVM_SETTLEMENT_CHAINS: "base-sepolia",
+      EVM_OPERATOR_KEYSTORE_JSON: keystoreJson,
+      EVM_OPERATOR_KEYSTORE_PASSWORD: "test-keystore-pw",
+    };
+
+    it("reads SOLANA_OPERATOR_KEYPAIR_JSON and EVM_OPERATOR_KEYSTORE_JSON, and refuses a path and content together", () => {
+      const c = loadConfig(env);
+      expect(c.solanaOperatorKeypair).toEqual({ from: "env", variable: "SOLANA_OPERATOR_KEYPAIR_JSON", json: solanaJson });
+      expect(c.evmOperatorKeystore).toEqual({ from: "env", variable: "EVM_OPERATOR_KEYSTORE_JSON", json: keystoreJson });
+      expect(() => loadConfig({ ...env, SOLANA_OPERATOR_KEYPAIR: "/outside/op.json" })).toThrow(/not both/);
+      expect(() => loadConfig({ ...env, EVM_OPERATOR_KEYSTORE: "/outside/ks" })).toThrow(/not both/);
+      const { EVM_OPERATOR_KEYSTORE_PASSWORD: _pw, ...noPassword } = env;
+      expect(() => loadConfig(noPassword)).toThrow(/EVM_OPERATOR_KEYSTORE_PASSWORD/);
+      // Empty content counts as unset.
+      expect(() => loadConfig({ ...env, SOLANA_OPERATOR_KEYPAIR_JSON: " " })).toThrow(/SOLANA_OPERATOR_KEYPAIR_JSON \(content\)/);
+    });
+
+    it("never shows the key content in the logged configuration", () => {
+      const shown = JSON.stringify(describeConfig(loadConfig(env)));
+      expect(shown).toContain("env SOLANA_OPERATOR_KEYPAIR_JSON (set, not shown)");
+      expect(shown).toContain("env EVM_OPERATOR_KEYSTORE_JSON (set, not shown)");
+      for (const part of [solanaJson, String(kp.secretKey[0]) + "," + String(kp.secretKey[1]), "c1c1c1", "5a5a5a", "3c3c3c", "test-keystore-pw"]) {
+        expect(shown).not.toContain(part);
+      }
+      expect(describeConfig(loadConfig({ ...env, SOLANA_OPERATOR_KEYPAIR_JSON: "", SOLANA_OPERATOR_KEYPAIR: "/outside/op.json" })).solanaOperatorKeypair).toBe(
+        "file /outside/op.json",
+      );
+    });
+
+    it("refuses the key content in NEXT_PUBLIC_*, and redacts it in every printable form", () => {
+      expect(() => loadConfig({ ...env, NEXT_PUBLIC_X: solanaJson })).toThrow(/server secret/);
+      expect(() => loadConfig({ ...env, NEXT_PUBLIC_X: bs58(kp.secretKey) })).toThrow(/server secret/);
+      expect(() => loadConfig({ ...env, NEXT_PUBLIC_X: "c1".repeat(32) })).toThrow(/server secret/);
+      expect(() => loadConfig({ ...env, NEXT_PUBLIC_SOLANA_OPERATOR_KEYPAIR_JSON: "x" })).toThrow(/NEXT_PUBLIC/);
+      const secret = kp.secretKey;
+      const forms = [
+        solanaJson,
+        JSON.stringify(Array.from(secret), null, 2),
+        Array.from(secret).join(", "),
+        bs58(secret),
+        bs58(secret.subarray(0, 32)),
+        Buffer.from(secret).toString("hex"),
+        "0x" + Buffer.from(secret.subarray(0, 32)).toString("hex"),
+        Buffer.from(secret).toString("base64"),
+        keystoreJson,
+        "c1".repeat(32),
+        "0x" + "3c".repeat(32),
+        "5a".repeat(32),
+      ];
+      for (const f of forms) expect(redactSecrets(`error: ${f} end`, env), f.slice(0, 20)).toBe("error: *** end");
+      // The operator's public key and the keystore's address are not secrets.
+      const pub = kp.publicKey.toBase58();
+      expect(redactSecrets(`operator ${pub}`, env)).toBe(`operator ${pub}`);
+    });
   });
 
   it("reads the CORS origins: exact http(s) origins only, never a wildcard", () => {
