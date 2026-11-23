@@ -1,0 +1,21 @@
+# Only package*.json, src/ and config/ are copied (Dockerfile); this keeps the build
+# context small and makes sure no secret is ever sent to the builder.
+.git
+node_modules
+.env
+.env.*
+*-keypair.json
+*keypair*.json
+id.json
+*.key
+*.pem
+keys/
+.secrets/
+test
+scripts
+docs
+supabase
+coverage
+dist
+*.log
+.vitest

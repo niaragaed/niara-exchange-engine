@@ -12,7 +12,8 @@
     "test": "vitest run",
     "test:engine": "vitest run test/engine",
     "test:intents": "vitest run test/intents",
-    "start": "node --env-file=.env src/service/main.ts"
+    "start": "node --env-file=.env src/service/main.ts",
+    "start:railway": "node src/service/main.ts"
   },
   "dependencies": {
     "@hono/node-server": "2.1.6",
