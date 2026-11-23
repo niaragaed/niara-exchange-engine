@@ -65,3 +65,37 @@ describe("CORS", () => {
     expect(() => createApp({} as OrderService, { maxBodyBytes: 4096, corsOrigins: ["*"] })).toThrow(/never \*/);
   });
 });
+
+describe("CORS with the production origins", () => {
+  const prod = createApp({} as OrderService, { maxBodyBytes: 4096, corsOrigins: ["https://niaraglobal.com", "https://www.niaraglobal.com"] });
+  const preflightFrom = (origin: string) =>
+    prod.request("/v1/orders", {
+      method: "OPTIONS",
+      headers: { origin, "access-control-request-method": "POST", "access-control-request-headers": "content-type" },
+    });
+
+  it("allows niaraglobal.com and www.niaraglobal.com, each echoed exactly", async () => {
+    for (const origin of ["https://niaraglobal.com", "https://www.niaraglobal.com"]) {
+      const r = await preflightFrom(origin);
+      expect(r.status).toBe(204);
+      expect(r.headers.get("access-control-allow-origin")).toBe(origin);
+      const get = await prod.request("/health", { headers: { origin } });
+      expect(get.headers.get("access-control-allow-origin")).toBe(origin);
+    }
+  });
+
+  it("refuses look-alikes, other subdomains, http and the local site", async () => {
+    for (const origin of [
+      "http://niaraglobal.com",
+      "https://api.niaraglobal.com",
+      "https://evil.niaraglobal.com",
+      "https://niaraglobal.com.evil.example",
+      "https://wwwniaraglobal.com",
+      "https://niaraglobal.co",
+      "http://localhost:3000",
+      "null",
+    ]) {
+      expect((await preflightFrom(origin)).headers.get("access-control-allow-origin"), origin).toBeNull();
+    }
+  });
+});

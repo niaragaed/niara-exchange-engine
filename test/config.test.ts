@@ -303,10 +303,35 @@ describe("loadConfig", () => {
       loadConfig({ ...base, CORS_ORIGINS: "http://localhost:3000, https://niara-test.vercel.app,http://localhost:3000" }).corsOrigins,
     ).toEqual(["http://localhost:3000", "https://niara-test.vercel.app"]);
     expect(loadConfig({ ...base, CORS_ORIGINS: "" }).corsOrigins).toEqual([]);
-    for (const bad of ["*", "https://*.vercel.app", "http://localhost:3000/", "https://site.example/trade", "localhost:3000", "ftp://x.example"]) {
+    for (const bad of [
+      "*",
+      "https://*.vercel.app",
+      "https://*.niaraglobal.com",
+      "*.niaraglobal.com",
+      "https://niaraglobal.*",
+      "http://localhost:3000/",
+      "https://site.example/trade",
+      "localhost:3000",
+      "ftp://x.example",
+      "null",
+      "https://NiaraGlobal.com",
+      "https://niaraglobal.com:443",
+      "http://niaraglobal.com", // a deployed site is https
+      "http://192.168.1.10:3000",
+    ]) {
       expect(() => loadConfig({ ...base, CORS_ORIGINS: bad }), bad).toThrow(/CORS_ORIGINS/);
     }
     expect(describeConfig(loadConfig({ ...base, CORS_ORIGINS: "http://localhost:3000" })).corsOrigins).toBe("http://localhost:3000");
+    expect(loadConfig({ ...base, CORS_ORIGINS: "http://127.0.0.1:3000,http://[::1]:3000" }).corsOrigins).toHaveLength(2);
+    // A wildcard anywhere in the list refuses the whole list.
+    expect(() => loadConfig({ ...base, CORS_ORIGINS: "https://niaraglobal.com,*" })).toThrow(/wildcards/);
+  });
+
+  it("accepts the production origins, on Railway, exactly as listed", () => {
+    const prod = "https://niaraglobal.com,https://www.niaraglobal.com";
+    const c = loadConfig({ ...NO_WORKER, DATABASE_URL: URL_OK, RAILWAY_ENVIRONMENT_ID: "test-env-id", CORS_ORIGINS: prod });
+    expect(c.corsOrigins).toEqual(["https://niaraglobal.com", "https://www.niaraglobal.com"]);
+    expect(describeConfig(c).corsOrigins).toBe(prod);
   });
 
   it(".env.example parses, holds placeholders only, and documents every variable", () => {

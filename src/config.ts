@@ -295,9 +295,13 @@ function trustProxy(raw: string | undefined, platform: "railway" | "local"): Pro
   return v;
 }
 
+const LOOPBACK_ORIGIN_HOSTS = new Set(["localhost", "127.0.0.1", "[::1]"]);
+
 /**
  * `CORS_ORIGINS`: comma-separated origins (`scheme://host[:port]`, no path, no trailing
- * slash), each http(s). `*` and anything that is not exactly an origin are refused.
+ * slash, lowercase host), https, or http for localhost only. `*`, any wildcard and
+ * anything that is not exactly an origin are refused. Production:
+ * `https://niaraglobal.com,https://www.niaraglobal.com`.
  */
 function corsOrigins(raw: string | undefined): string[] {
   const list = (raw ?? "").split(",").map((o) => o.trim()).filter((o) => o !== "");
@@ -311,6 +315,10 @@ function corsOrigins(raw: string | undefined): string[] {
     }
     if ((url.protocol !== "https:" && url.protocol !== "http:") || url.origin !== o) {
       throw new ConfigError(`CORS_ORIGINS: ${o} is not an origin (scheme://host[:port], no path or trailing slash)`);
+    }
+    // Plain http only for a local dev site; a deployed site is https.
+    if (url.protocol === "http:" && !LOOPBACK_ORIGIN_HOSTS.has(url.hostname)) {
+      throw new ConfigError(`CORS_ORIGINS: ${o} must be https (http is allowed only for localhost)`);
     }
   }
   return [...new Set(list)];
