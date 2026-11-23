@@ -13,8 +13,9 @@ FROM node:22.23.4-bookworm-slim
 ENV NODE_ENV=production
 WORKDIR /app
 
-# Production dependencies only, exactly as locked; no install scripts.
-COPY package.json package-lock.json ./
+# Production dependencies only, exactly as locked; no install scripts. .npmrc (with
+# legacy-peer-deps) must be copied too, or npm ci finds the lock out of sync (EUSAGE).
+COPY package.json package-lock.json .npmrc ./
 RUN npm ci --omit=dev --ignore-scripts && npm cache clean --force
 
 # The service reads only src/ (code, the program IDL) and config/ (chain settings and
