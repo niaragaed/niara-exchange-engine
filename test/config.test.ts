@@ -12,6 +12,7 @@ describe("loadConfig", () => {
   it("reads env vars with defaults", () => {
     expect(loadConfig({ DATABASE_URL: URL_OK, WORKER_ENABLED: "off" })).toEqual({
       databaseUrl: URL_OK,
+      platform: "local",
       host: "127.0.0.1",
       port: 8787,
       maxBodyBytes: 16_384,
@@ -40,6 +41,22 @@ describe("loadConfig", () => {
       port: 9000,
       maxOpenOrdersPerWallet: 5,
     });
+  });
+
+  it("listens on HOST and PORT: loopback locally, 0.0.0.0 on Railway (detected by its injected variables)", () => {
+    const base = { ...NO_WORKER, DATABASE_URL: URL_OK };
+    // TEST ONLY: placeholder Railway ids.
+    const railway = { ...base, RAILWAY_ENVIRONMENT_ID: "test-env-id", PORT: "4321" };
+    expect(loadConfig(base)).toMatchObject({ platform: "local", host: "127.0.0.1", port: 8787 });
+    expect(loadConfig({ ...base, HOST: "0.0.0.0", PORT: "9000" })).toMatchObject({ platform: "local", host: "0.0.0.0", port: 9000 });
+    expect(loadConfig(railway)).toMatchObject({ platform: "railway", host: "0.0.0.0", port: 4321 });
+    expect(loadConfig({ ...base, RAILWAY_PROJECT_ID: "test-project-id" }).host).toBe("0.0.0.0");
+    expect(loadConfig({ ...railway, HOST: "::" }).host).toBe("::");
+    expect(loadConfig({ ...base, RAILWAY_SERVICE_ID: "" }).platform).toBe("local");
+    // A loopback bind is unreachable from Railway's proxy: refused there, not silently kept.
+    for (const h of ["127.0.0.1", "localhost", "::1"]) expect(() => loadConfig({ ...railway, HOST: h }), h).toThrow(/unreachable from Railway/);
+    expect(() => loadConfig({ ...base, HOST: "http://0.0.0.0" })).toThrow(/bare IP address/);
+    expect(describeConfig(loadConfig(railway))).toMatchObject({ platform: "railway", host: "0.0.0.0", port: 4321 });
   });
 
   it("requires a postgres DATABASE_URL and refuses the transaction pooler", () => {

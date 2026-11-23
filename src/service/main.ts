@@ -21,7 +21,9 @@ import { createApp } from "./http.ts";
 import { NotSingleInstanceError, OrderService, SchemaNotReadyError, ServiceRoleError } from "./order-service.ts";
 
 /**
- * Order service entry point: `npm start` (node --env-file=.env src/service/main.ts).
+ * Order service entry point: `npm start` (node --env-file=.env src/service/main.ts)
+ * locally; on Railway `node src/service/main.ts` (Dockerfile), with variables from the
+ * service settings.
  * TESTNET ONLY. Run exactly ONE instance: a second one finds the Postgres advisory lock
  * taken and exits. If the database connection drops, the lock is gone with it, so the
  * process exits and must be restarted (by the supervisor); it rebuilds its books from

@@ -14,7 +14,11 @@ import { EVM_CHAIN_IDS, isEvmChainId, type EvmChainId } from "./evm/settings.ts"
 export interface ServiceConfig {
   /** Postgres connection string (direct or session mode, never the 6543 pooler). Secret. */
   databaseUrl: string;
+  /** Where the service runs: `railway` when Railway's injected variables are present. */
+  platform: "railway" | "local";
+  /** Bind address: HOST, else 0.0.0.0 on Railway (its proxy must reach it), else 127.0.0.1. */
   host: string;
+  /** PORT (Railway injects it), else 8787. */
   port: number;
   /** Request body limit, bytes. */
   maxBodyBytes: number;
@@ -130,9 +134,11 @@ export function loadConfig(env: Env = process.env): ServiceConfig {
   const password = decodeURIComponent(new URL(databaseUrl).password);
   // A private RPC URL can carry an API key; the public RPCs are not secrets.
   checkNoPublicSecrets(env, [databaseUrl, password, env["SUPABASE_SERVICE_ROLE_KEY"] ?? "", ...privateRpcValues(env), ...passwordValues(env)]);
+  const platform = onRailway(env) ? "railway" : "local";
   return {
     databaseUrl,
-    host: env["HOST"] || "127.0.0.1",
+    platform,
+    host: listenHost(env["HOST"], platform),
     port: int(env, "PORT", 8787, 1, 65535),
     maxBodyBytes: int(env, "MAX_BODY_BYTES", 16 * 1024, 1024, 1024 * 1024),
     maxOpenOrdersPerWallet: int(env, "MAX_OPEN_ORDERS_PER_WALLET", 50, 1, 10_000),
@@ -145,6 +151,30 @@ export function loadConfig(env: Env = process.env): ServiceConfig {
     ...workerConfig(env),
     ...evmConfig(env),
   };
+}
+
+/** Railway injects these into every deployment (and `railway run`). */
+const RAILWAY_VARS = ["RAILWAY_ENVIRONMENT_ID", "RAILWAY_PROJECT_ID", "RAILWAY_SERVICE_ID"] as const;
+
+export function onRailway(env: Env): boolean {
+  return RAILWAY_VARS.some((n) => (env[n] ?? "") !== "");
+}
+
+const LOOPBACK_HOSTS = new Set(["127.0.0.1", "localhost", "::1"]);
+
+/**
+ * The bind address. Locally the default stays loopback (a reverse proxy in front).
+ * On Railway the edge proxy reaches the container over its network interface, so the
+ * default is 0.0.0.0, and a loopback HOST (unreachable there) is refused.
+ */
+function listenHost(raw: string | undefined, platform: "railway" | "local"): string {
+  const host = (raw ?? "").trim();
+  if (host === "") return platform === "railway" ? "0.0.0.0" : "127.0.0.1";
+  if (/\s|\/|^\[/.test(host)) throw new ConfigError("HOST must be a bare IP address or host name (e.g. 0.0.0.0, ::, 127.0.0.1)");
+  if (platform === "railway" && LOOPBACK_HOSTS.has(host)) {
+    throw new ConfigError(`HOST=${host} is unreachable from Railway's proxy: unset HOST (0.0.0.0 is the default there) or set 0.0.0.0 or ::`);
+  }
+  return host;
 }
 
 /**
