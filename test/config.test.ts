@@ -42,6 +42,7 @@ describe("loadConfig", () => {
       rateLimitReadsPerMin: 300,
       rateLimitWritesPerMin: 30,
       trustProxy: "none",
+      instanceLockWaitSecs: 0,
     });
     expect(() => loadConfig({ DATABASE_URL: URL_OK })).toThrow(/SOLANA_OPERATOR_KEYPAIR/);
     expect(loadConfig({ DATABASE_URL: URL_OK, SOLANA_OPERATOR_KEYPAIR: "/outside/operator.json" })).toMatchObject({
@@ -85,6 +86,14 @@ describe("loadConfig", () => {
     expect(() => loadConfig({ ...base, RATE_LIMIT_WRITES_PER_MIN: "0" })).toThrow(/between/);
   });
 
+  it("waits for the instance lock on Railway (a redeploy), and refuses at once locally", () => {
+    const base = { ...NO_WORKER, DATABASE_URL: URL_OK };
+    expect(loadConfig(base).instanceLockWaitSecs).toBe(0);
+    expect(loadConfig({ ...base, RAILWAY_ENVIRONMENT_ID: "test-env-id" }).instanceLockWaitSecs).toBe(600);
+    expect(loadConfig({ ...base, INSTANCE_LOCK_WAIT_SECS: "30" }).instanceLockWaitSecs).toBe(30);
+    expect(() => loadConfig({ ...base, INSTANCE_LOCK_WAIT_SECS: "7200" })).toThrow(/between/);
+  });
+
   it("requires a postgres DATABASE_URL and refuses the transaction pooler", () => {
     expect(() => loadConfig({})).toThrow(ConfigError);
     expect(() => loadConfig({ DATABASE_URL: "not a url" })).toThrow(/not a URL/);
@@ -117,7 +126,12 @@ describe("loadConfig", () => {
       const ssl = parsePgUrl(c.databaseUrl).ssl as { ca?: string; rejectUnauthorized?: boolean };
       expect(ssl.ca).toBe(readFileSync(SUPABASE_CA_PATH, "utf8"));
       expect(ssl.rejectUnauthorized).not.toBe(false);
-      expect(describeConfig(c).databaseTls).toBe("verify-full, committed config/supabase-ca.crt");
+      expect(describeConfig(c).databaseTls).toBe("server verified against the committed Supabase CA");
+      // The log line survives redaction readable (redactSecrets masks the URL's parameter values).
+      const env = { DATABASE_URL: `${URL_OK}?sslmode=verify-full&sslrootcert=config/supabase-ca.crt` };
+      expect(redactSecrets(JSON.stringify(describeConfig(loadConfig({ ...base, ...env }))), env)).toContain(
+        "server verified against the committed Supabase CA",
+      );
     });
 
     it("resolves a relative sslrootcert against the repository and keeps an absolute one", () => {

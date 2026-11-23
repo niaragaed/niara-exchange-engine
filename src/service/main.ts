@@ -18,7 +18,9 @@ import { deployedChain, loadEvmSettings, type DeployedEvmChain } from "../evm/se
 import type { CoverageChecker } from "../solana/coverage.ts";
 import { loadKeypairSource } from "../solana/keypair.ts";
 import { SettlementWorker } from "../worker/worker.ts";
-import { createApp } from "./http.ts";
+import type { Context, Hono } from "hono";
+import { createApp, createStandbyApp } from "./http.ts";
+import { startWhenLockFree } from "./startup.ts";
 import { clientKey } from "./rate-limit.ts";
 import { NotSingleInstanceError, OrderService, SchemaNotReadyError, ServiceRoleError } from "./order-service.ts";
 
@@ -26,10 +28,12 @@ import { NotSingleInstanceError, OrderService, SchemaNotReadyError, ServiceRoleE
  * Order service entry point: `npm start` (node --env-file=.env src/service/main.ts)
  * locally; on Railway `node src/service/main.ts` (Dockerfile), with variables from the
  * service settings.
- * TESTNET ONLY. Run exactly ONE instance: a second one finds the Postgres advisory lock
- * taken and exits. If the database connection drops, the lock is gone with it, so the
- * process exits and must be restarted (by the supervisor); it rebuilds its books from
- * the database on start.
+ * TESTNET ONLY. Run exactly ONE instance: the Postgres advisory lock lets only one
+ * serve. A starting instance that finds the lock taken waits in standby for up to
+ * INSTANCE_LOCK_WAIT_SECS (a redeploy: the previous deployment holds it until the
+ * platform stops it; 0 locally = exit at once), then exits. If the database connection
+ * drops, the lock is gone with it, so the process exits and must be restarted (by the
+ * supervisor); it rebuilds its books from the database on start.
  */
 
 /** Every log line goes through redactSecrets: driver errors can quote the database URL. */
@@ -78,24 +82,82 @@ async function main(): Promise<void> {
     log("delegate_check_disabled", { notice: "orders are matched without on-chain delegate checks" });
   }
 
+  // Operator keys: loaded (and checked) before the service answers anything, so a bad
+  // key fails the deployment instead of a running service. Never logged.
+  const solanaOperator =
+    config.workerEnabled && config.solanaOperatorKeypair ? loadKeypairSource(config.solanaOperatorKeypair, "settlement operator") : null;
+  const evmOperator =
+    solanaOperator && evm.length > 0
+      ? loadKeystoreSource(config.evmOperatorKeystore!, config.evmOperatorKeystorePassword!, "EVM settlement operator")
+      : null;
+
+  const edge = {
+    corsOrigins: config.corsOrigins,
+    rateLimit: {
+      readsPerMinute: config.rateLimitReadsPerMin,
+      writesPerMinute: config.rateLimitWritesPerMin,
+      // Railway: its edge's X-Real-IP; locally: the TCP peer. Never X-Forwarded-For.
+      key: (c: Context) => clientKey(config.trustProxy, c.req.header("x-real-ip"), getConnInfo(c).remote.address),
+    },
+    log,
+  };
+  // Listen at once, in standby (health "standby", API 503) until the service has the
+  // single-instance lock and has rebuilt its books; then the real API takes over.
+  let current: Hono = createStandbyApp(edge);
+  const server = serve({ fetch: (req, env) => current.fetch(req, env), hostname: config.host, port: config.port }, (info) =>
+    log("listening", { host: info.address, port: info.port, mode: "standby until the instance lock is held" }),
+  );
+  const close = () =>
+    server.close(() => {
+      // Closing the connection ends the session and releases the advisory lock.
+      void db.close().finally(() => process.exit(0));
+    });
+  let timers: NodeJS.Timeout[] = [];
+  let worker: SettlementWorker | undefined;
+  const shutdown = (signal: string) => {
+    if (stopping) return;
+    stopping = true;
+    log("stopping", { signal });
+    for (const t of timers) clearInterval(t);
+    worker?.stop();
+    close();
+  };
+  process.on("SIGINT", () => shutdown("SIGINT"));
+  process.on("SIGTERM", () => shutdown("SIGTERM"));
+
   // The chains the worker holds an adapter for, set once the worker is built (GET /v1/markets).
   let settlementChains: ChainId[] = [];
-  let service: OrderService;
+  let started: OrderService | null;
   try {
-    service = await OrderService.start({
-      settlementChains: () => settlementChains,
-      db,
-      clock: () => Math.floor(Date.now() / 1000),
-      newOrderId: randomUUID,
-      newMatchId: randomMatchId,
-      settlementMarginSecs: config.settlementMarginSecs,
-      maxOpenOrdersPerWallet: config.maxOpenOrdersPerWallet,
-      coverage,
-      onFatal: (err) => {
-        // Engine and database may differ: exit; the restart rebuilds from the database.
-        setImmediate(() => die("fatal_persist_failure", err));
-      },
-      log,
+    started = await startWhenLockFree({
+      attempt: () =>
+        OrderService.start({
+          settlementChains: () => settlementChains,
+          db,
+          clock: () => Math.floor(Date.now() / 1000),
+          newOrderId: randomUUID,
+          newMatchId: randomMatchId,
+          settlementMarginSecs: config.settlementMarginSecs,
+          maxOpenOrdersPerWallet: config.maxOpenOrdersPerWallet,
+          coverage,
+          onFatal: (err) => {
+            // Engine and database may differ: exit; the restart rebuilds from the database.
+            setImmediate(() => die("fatal_persist_failure", err));
+          },
+          log,
+        }),
+      lockBusy: (e) => e instanceof NotSingleInstanceError,
+      waitMs: config.instanceLockWaitSecs * 1000,
+      retryMs: 2_000,
+      now: Date.now,
+      sleep: (ms) => new Promise((resolve) => setTimeout(resolve, ms)),
+      onWaiting: (waitedMs) =>
+        log("waiting_for_instance_lock", {
+          notice: "another instance holds the single-instance lock (the previous deployment, until it stops); standing by",
+          waitedSecs: Math.round(waitedMs / 1000),
+          maxWaitSecs: config.instanceLockWaitSecs,
+        }),
+      stopped: () => stopping,
     });
   } catch (e) {
     if (e instanceof NotSingleInstanceError || e instanceof ServiceRoleError || e instanceof SchemaNotReadyError) {
@@ -103,6 +165,8 @@ async function main(): Promise<void> {
     }
     throw e;
   }
+  if (!started) return; // stopping while in standby
+  const service = started;
 
   const program = service.chainConfig("solana-devnet")?.settlementProgram;
   if (program !== PROGRAM_ID.toBase58()) {
@@ -113,38 +177,23 @@ async function main(): Promise<void> {
     });
   }
 
-  const app = createApp(service, {
-    maxBodyBytes: config.maxBodyBytes,
-    corsOrigins: config.corsOrigins,
-    rateLimit: {
-      readsPerMinute: config.rateLimitReadsPerMin,
-      writesPerMinute: config.rateLimitWritesPerMin,
-      // Railway: its edge's X-Real-IP; locally: the TCP peer. Never X-Forwarded-For.
-      key: (c) => clientKey(config.trustProxy, c.req.header("x-real-ip"), getConnInfo(c).remote.address),
-    },
-    log,
-  });
-  const server = serve({ fetch: app.fetch, hostname: config.host, port: config.port }, (info) =>
-    log("listening", { host: info.address, port: info.port }),
-  );
+  current = createApp(service, { ...edge, maxBodyBytes: config.maxBodyBytes });
+  log("serving", { host: config.host, port: config.port });
 
   // Settlement worker: in this process, so the advisory lock makes it the only one.
-  let worker: SettlementWorker | undefined;
-  if (config.workerEnabled && config.solanaOperatorKeypair) {
-    // From a file (local) or SOLANA_OPERATOR_KEYPAIR_JSON (Railway); never logged.
-    const operator = loadKeypairSource(config.solanaOperatorKeypair, "settlement operator");
+  if (solanaOperator) {
     const adapters: Partial<Record<ChainId, SettlementAdapter>> = {
-      "solana-devnet": await SolanaSettlementAdapter.create({ rpc: solana, operator }),
+      "solana-devnet": await SolanaSettlementAdapter.create({ rpc: solana, operator: solanaOperator }),
     };
-    log("worker_starting", { chain: "solana-devnet", operator: operator.publicKey.toBase58() });
-    if (evm.length > 0) {
+    log("worker_starting", { chain: "solana-devnet", operator: solanaOperator.publicKey.toBase58() });
+    if (evmOperator) {
       // The EVM operator: decrypted once, in memory only; its key and password are never logged.
-      const evmOperator = loadKeystoreSource(config.evmOperatorKeystore!, config.evmOperatorKeystorePassword!, "EVM settlement operator");
       for (const e of evm) {
         adapters[e.chain.chain] = await EvmSettlementAdapter.create({ client: e.client, settings: e.chain, operator: evmOperator });
         log("worker_starting", { chain: e.chain.chain, operator: evmOperator.address });
       }
     }
+    if (stopping) return;
     settlementChains = Object.keys(adapters) as ChainId[];
     worker = new SettlementWorker({
       db,
@@ -164,24 +213,11 @@ async function main(): Promise<void> {
     log("worker_disabled", { notice: "matches stay pending: WORKER_ENABLED is off" });
   }
 
-  const timers = [
+  if (stopping) return;
+  timers = [
     setInterval(() => void service.sweepExpired(), config.expirySweepSecs * 1000),
     setInterval(() => void service.refreshMarkets(), config.marketRefreshSecs * 1000),
   ];
-
-  const shutdown = (signal: string) => {
-    if (stopping) return;
-    stopping = true;
-    log("stopping", { signal });
-    for (const t of timers) clearInterval(t);
-    worker?.stop();
-    server.close(() => {
-      // Closing the connection ends the session and releases the advisory lock.
-      void db.close().finally(() => process.exit(0));
-    });
-  };
-  process.on("SIGINT", () => shutdown("SIGINT"));
-  process.on("SIGTERM", () => shutdown("SIGTERM"));
 }
 
 main().catch((e: unknown) => {

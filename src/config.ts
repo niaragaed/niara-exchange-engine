@@ -80,6 +80,12 @@ export interface ServiceConfig {
    * the container from the proxy); `none` = the TCP peer (the local default).
    */
   trustProxy: ProxyTrust;
+  /**
+   * How long a starting instance waits in standby for the single-instance lock (a
+   * redeploy: the previous deployment holds it until Railway stops it). 0 = refuse at
+   * once (the local default); 600 on Railway.
+   */
+  instanceLockWaitSecs: number;
 }
 
 export class ConfigError extends Error {
@@ -251,6 +257,7 @@ export function loadConfig(env: Env = process.env): ServiceConfig {
     rateLimitReadsPerMin: int(env, "RATE_LIMIT_READS_PER_MIN", 300, 1, 100_000),
     rateLimitWritesPerMin: int(env, "RATE_LIMIT_WRITES_PER_MIN", 30, 1, 10_000),
     trustProxy: trustProxy(env["TRUST_PROXY"], platform),
+    instanceLockWaitSecs: int(env, "INSTANCE_LOCK_WAIT_SECS", platform === "railway" ? 600 : 0, 0, 3_600),
     ...workerConfig(env),
     ...evmConfig(env),
   };
@@ -421,7 +428,8 @@ export function describeConfig(c: ServiceConfig): Record<string, string | number
     evmSettlementChains: evmSettlementChains.join(",") || "(none)",
     evmOperatorKeystorePassword: pw ? "(set, not shown)" : null,
     databaseUrl: "(set, not shown)",
-    databaseTls: databaseCaCommitted ? "verify-full, committed config/supabase-ca.crt" : "verify-full, custom sslrootcert (not shown)",
+    // Worded without the URL's own parameter values: redactSecrets masks those.
+    databaseTls: databaseCaCommitted ? "server verified against the committed Supabase CA" : "server verified against a custom CA (path not shown)",
     solanaRpcUrl: solanaRpcUrl === "https://api.devnet.solana.com" ? solanaRpcUrl : "(custom, not shown)",
   };
 }
