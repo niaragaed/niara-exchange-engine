@@ -131,9 +131,9 @@ repository or in a `NEXT_PUBLIC_*` variable. The service refuses to start if a
 | Variable | Secret | Railway value | Notes |
 |---|---|---|---|
 | `HOST` | no | *unset* | Default 0.0.0.0 on Railway, 127.0.0.1 locally. `::` also works. A loopback value is refused on Railway |
-| `TRUST_PROXY` | no | *unset* | Default `railway` on Railway: the client IP for rate limiting is the `X-Real-IP` header that Railway's edge sets. `none` (the TCP peer) is the local default and is refused on Railway. `X-Forwarded-For` is never read |
-| `RATE_LIMIT_READS_PER_MIN` | no | `300` (default) | Per client IP (IPv6: per /64). GET and preflights. Allows a burst of that many, then refills evenly |
-| `RATE_LIMIT_WRITES_PER_MIN` | no | `30` (default) | Per client IP. POST (order submit and cancel), in a bucket of its own. Over the limit: 429 `rate_limited` with `Retry-After` |
+| `TRUST_PROXY` | no | *unset* | Default `railway` on Railway: the client IP for rate limiting is only the `X-Real-IP` header that Railway's edge sets (several values: the last); requests without a usable one share one bucket. `none` (the TCP peer) is the local default and is refused on Railway. `X-Forwarded-For` is never read |
+| `RATE_LIMIT_READS_PER_MIN` | no | `300` (default) | Per client IP (IPv6: per /64). GET, preflights and unknown paths. At most that many in any 60 s (sliding window) |
+| `RATE_LIMIT_WRITES_PER_MIN` | no | `30` (default) | Per client IP. Every POST, whatever its answer (4xx included), in a window of its own: the 31st in any 60 s is refused. Over the limit: 429 `rate_limited` with `Retry-After` |
 | `MAX_BODY_BYTES` | no | `16384` (default) | Larger bodies get 413 |
 | `MAX_OPEN_ORDERS_PER_WALLET` | no | `50` (default) | Per wallet, per chain |
 | `INSTANCE_LOCK_WAIT_SECS` | no | *unset* (600) | How long a new deployment waits in standby for the previous one to release the lock (section 2). 0–3600 |
@@ -274,20 +274,29 @@ list each approved equity listing with its symbol and name.
 sets `X-Real-IP`. Whether it also *replaces* a copy sent by the client is not
 documented, so test it once after the first deploy.
 
-The test sends 31 malformed POSTs, each claiming a different `X-Real-IP`. The malformed
-body means nothing is parsed into an order or written.
+Two runs of 31 POSTs with the body `{}`: the service answers 400 to it, and nothing
+is parsed into an order or written. Wait a minute between the two runs, so the first
+does not fill the window of the second.
 
 ```bash
+# 1. Plain: the 31st POST in a minute is refused.
 for i in $(seq 1 31); do
   curl -sS -o /dev/null -w "%{http_code} " -X POST https://api.niaraglobal.com/v1/orders \
-    -H "content-type: application/json" -H "X-Real-IP: 198.51.100.$i" --data '{'
+    -H "content-type: application/json" --data '{}'
+done; echo
+sleep 61
+# 2. Each request claims a different X-Real-IP: it must not buy a fresh allowance.
+for i in $(seq 1 31); do
+  curl -sS -o /dev/null -w "%{http_code} " -X POST https://api.niaraglobal.com/v1/orders \
+    -H "content-type: application/json" -H "X-Real-IP: 198.51.100.$i" --data '{}'
 done; echo
 ```
 
-- **Expected:** thirty `400` (malformed JSON) and then a `429`. The edge replaced the
-  forged header, so all 31 requests counted against your one real address.
-- **If all 31 are `400`,** the forged header was trusted: anyone could dodge the limit.
-  Stop and report it. Do not run this check behind Cloudflare's proxy (section 5).
+- **Expected, both runs:** thirty `400` and then a `429`.
+- **If run 1 ends in `400`,** the limit is not enforced. Stop and report it.
+- **If only run 2 ends in `400`,** the edge passed the forged header through in place
+  of its own: anyone could dodge the limit. Stop and report it. Do not run this check
+  behind Cloudflare's proxy (section 5).
 
 Your address then waits up to a minute before it can POST again; reads are unaffected.
 

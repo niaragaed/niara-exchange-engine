@@ -96,7 +96,7 @@ async function main(): Promise<void> {
     rateLimit: {
       readsPerMinute: config.rateLimitReadsPerMin,
       writesPerMinute: config.rateLimitWritesPerMin,
-      // Railway: its edge's X-Real-IP; locally: the TCP peer. Never X-Forwarded-For.
+      // Railway: only its edge's X-Real-IP (no header: one shared bucket); locally: the TCP peer. Never X-Forwarded-For.
       key: (c: Context) => clientKey(config.trustProxy, c.req.header("x-real-ip"), getConnInfo(c).remote.address),
     },
     log,

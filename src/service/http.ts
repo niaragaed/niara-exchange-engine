@@ -21,8 +21,10 @@ import { RateLimiter } from "./rate-limit.ts";
  *
  * Bodies above `maxBodyBytes` are refused with 413 before they are parsed.
  *
- * Rate limits (`rateLimit`): per client IP (see rate-limit.ts), on every path,
- * preflights included; POST has its own, stricter bucket. Over the limit: 429
+ * Rate limits (`rateLimit`): per client IP (see rate-limit.ts), at most N requests in
+ * any 60 s, on every path (unknown paths included) and before any body is read or
+ * validated, so 4xx answers count too; preflights included; POST has its own, stricter
+ * window. Over the limit: 429
  * `rate_limited` with Retry-After (and the CORS header for a listed origin, so the
  * site can read it).
  *
