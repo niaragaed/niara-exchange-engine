@@ -207,6 +207,13 @@ node --env-file=.env scripts/counter-order.ts --side sell --price 25 --quantity 
 node --env-file=.env scripts/counter-order.ts --side buy  --price 24 --quantity 3             # the tester sells into it
 ```
 
+`--engine-url` (default `http://127.0.0.1:8787`) picks the order service: https anywhere,
+plain http only for localhost. For the deployed service:
+
+```bash
+node --env-file=.env scripts/counter-order.ts --engine-url https://api.niaraglobal.com --side sell --price 25 --quantity 5
+```
+
 Prices are mockUSDT per share, quantities whole shares (tEQTY's lot is one share). The
 order expires after `--expires-hours` (default 24); the status URL is printed.
 

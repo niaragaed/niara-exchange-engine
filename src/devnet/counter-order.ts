@@ -94,3 +94,30 @@ export function ordersSharingDelegation(
     .filter((o) => (intent.side === "sell" ? o.side === "sell" && o.asset === intent.asset : o.side === "buy" && o.paymentAsset === intent.paymentAsset))
     .map((o) => o.id);
 }
+
+/** The deployed order service (docs/deploy-railway.md). */
+export const DEPLOYED_ENGINE_URL = "https://api.niaraglobal.com";
+
+const LOCAL_HOSTS = new Set(["localhost", "127.0.0.1", "[::1]"]);
+
+/**
+ * `--engine-url`: the order service the script talks to. https anywhere, plain http
+ * only for localhost (an order intent must not cross the network in the clear).
+ * Returns the origin; a path, query or credentials are refused.
+ */
+export function engineUrl(raw: string): string {
+  let url: URL;
+  try {
+    url = new URL(raw);
+  } catch {
+    throw new CounterOrderError(`--engine-url is not a URL: ${raw}`);
+  }
+  if (url.username || url.password || url.search || url.hash || (url.pathname !== "/" && url.pathname !== "")) {
+    throw new CounterOrderError("--engine-url must be a bare origin (scheme, host, optional port): no path, query or credentials");
+  }
+  if (url.protocol === "http:" && !LOCAL_HOSTS.has(url.hostname)) {
+    throw new CounterOrderError(`--engine-url must be https (http is allowed only for localhost): ${url.origin}`);
+  }
+  if (url.protocol !== "https:" && url.protocol !== "http:") throw new CounterOrderError("--engine-url must be an https URL");
+  return url.origin;
+}

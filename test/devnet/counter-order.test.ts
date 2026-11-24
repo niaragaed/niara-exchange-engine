@@ -1,6 +1,6 @@
 import { Keypair } from "@solana/web3.js";
 import { describe, expect, it } from "vitest";
-import { CounterOrderError, counterDelegation, counterIntent, ordersSharingDelegation, type CounterMarket } from "../../src/devnet/counter-order.ts";
+import { CounterOrderError, counterDelegation, counterIntent, engineUrl, ordersSharingDelegation, type CounterMarket } from "../../src/devnet/counter-order.ts";
 import { parseOrderIntent } from "../../src/intents/validate.ts";
 import { verifyIntentSignature } from "../../src/intents/verify.ts";
 import { solanaIntentMessage } from "../../src/intents/solana.ts";
@@ -80,5 +80,32 @@ describe("shared delegation guard", () => {
     ).toEqual(["live-sell", "partial", "stale"]);
     const buy = counterIntent(market, { ...args, side: "buy" });
     expect(ordersSharingDelegation([order({ id: "s" }), order({ id: "b", side: "buy" })], buy)).toEqual(["b"]);
+  });
+});
+
+describe("engineUrl (--engine-url)", () => {
+  it("accepts https anywhere and http only for localhost, returning the origin", () => {
+    expect(engineUrl("https://api.niaraglobal.com")).toBe("https://api.niaraglobal.com");
+    expect(engineUrl("https://api.niaraglobal.com/")).toBe("https://api.niaraglobal.com");
+    expect(engineUrl("http://127.0.0.1:8787")).toBe("http://127.0.0.1:8787");
+    expect(engineUrl("http://localhost:8787")).toBe("http://localhost:8787");
+    expect(engineUrl("http://[::1]:8787")).toBe("http://[::1]:8787");
+  });
+
+  it("refuses plain http to any other host, other schemes, paths and credentials", () => {
+    for (const bad of [
+      "http://api.niaraglobal.com",
+      "http://127.0.0.1.evil.example",
+      "http://localhost.evil.example",
+      "http://10.0.0.5:8787",
+      "ftp://api.niaraglobal.com",
+      "https://api.niaraglobal.com/v1",
+      "https://user:pw@api.niaraglobal.com",
+      "https://api.niaraglobal.com?x=1",
+      "api.niaraglobal.com",
+      "",
+    ]) {
+      expect(() => engineUrl(bad), bad).toThrow(CounterOrderError);
+    }
   });
 });

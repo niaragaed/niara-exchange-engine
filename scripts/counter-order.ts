@@ -5,6 +5,13 @@
  *
  *   node --env-file=.env scripts/counter-order.ts --side sell|buy --price 25 --quantity 5
  *        [--wallet equity-seller|equity-buyer] [--expires-hours 24] [--dry-run]
+ *        [--engine-url http://127.0.0.1:8787]
+ *
+ * --engine-url: the order service to trade against (default: the local one). https
+ * anywhere; plain http only for localhost. For the deployed service:
+ *
+ *   node --env-file=.env scripts/counter-order.ts --engine-url https://api.niaraglobal.com \
+ *        --side sell --price 25 --quantity 5
  *
  * Prerequisites: the order service is running (`npm start`) with tEQTY as an approved
  * market on solana-devnet.
@@ -36,7 +43,7 @@ import { signAsync } from "@noble/ed25519";
 import { base58 } from "@scure/base";
 import { PublicKey, TransactionMessage, VersionedTransaction } from "@solana/web3.js";
 import { redactSecrets } from "../src/config.ts";
-import { counterDelegation, counterIntent, ordersSharingDelegation, type CounterMarket } from "../src/devnet/counter-order.ts";
+import { DEPLOYED_ENGINE_URL, counterDelegation, counterIntent, engineUrl, ordersSharingDelegation, type CounterMarket } from "../src/devnet/counter-order.ts";
 import { solanaIntentMessage } from "../src/intents/solana.ts";
 import type { OrderIntent } from "../src/intents/types.ts";
 import { associatedTokenAddress, decodeConfig, decodeMintDecimals, decodeTokenAccount, pdas } from "../src/solana/accounts.ts";
@@ -59,10 +66,12 @@ const { values: args } = parseArgs({
     quantity: { type: "string" },
     wallet: { type: "string", default: "equity-seller" },
     "expires-hours": { type: "string", default: "24" },
-    service: { type: "string", default: process.env["E2E_SERVICE_URL"] ?? "http://127.0.0.1:8787" },
+    "engine-url": { type: "string", default: "http://127.0.0.1:8787" },
     "dry-run": { type: "boolean", default: false },
   },
 });
+
+let ENGINE = ""; // set (and validated) first thing in main()
 
 const logDir = join(homedir(), "niara-logs");
 mkdirSync(logDir, { recursive: true });
@@ -83,11 +92,12 @@ async function http(method: "GET" | "POST", path: string, body?: unknown): Promi
           headers: { "content-type": "application/json" },
           body: JSON.stringify(body, (_k, v) => (typeof v === "bigint" ? v.toString() : v)),
         };
-  const res = await fetch(new URL(path, args.service), init);
+  const res = await fetch(new URL(path, ENGINE), init);
   return { status: res.status, body: await res.json() };
 }
 
 async function main(): Promise<void> {
+  ENGINE = engineUrl(args["engine-url"]);
   const side = args.side;
   if (side !== "buy" && side !== "sell") throw new Error("--side must be buy or sell");
   if (!args.price || !args.quantity) throw new Error("--price (mockUSDT per share) and --quantity (shares) are required");
@@ -97,6 +107,8 @@ async function main(): Promise<void> {
 
   say("Niara counter order, Solana DEVNET (TESTNET ONLY: test tokens, no real assets, no real money)");
   say(`log: ${logFile}`);
+  say(`engine: ${ENGINE}`);
+  say(`deployed service: node --env-file=.env scripts/counter-order.ts --engine-url ${DEPLOYED_ENGINE_URL} --side ${side ?? "sell"} --price ${args.price ?? "25"} --quantity ${args.quantity ?? "5"}`);
   const rpc = await connectDevnet(process.env["SOLANA_RPC_URL"] || DEFAULT_DEVNET_RPC);
   say("cluster: devnet (genesis hash checked)");
 
@@ -110,7 +122,7 @@ async function main(): Promise<void> {
   if (!usdtMintAccount) throw new Error("mockUSDT mint not found");
 
   const health = await http("GET", "/health").catch(() => null);
-  if (!health || health.status !== 200) throw new Error(`the order service is not reachable at ${args.service}: start it with npm start`);
+  if (!health || health.status !== 200) throw new Error(`the order service is not reachable at ${ENGINE}: start it with npm start (local) or check the deployment`);
   const book = await http("GET", `/v1/books/solana-devnet/${ASSET_MINT.toBase58()}`);
   if (book.status !== 200 || book.body.status !== "approved") throw new Error(`tEQTY is not an approved market in the service: ${JSON.stringify(book.body)}`);
   if (book.body.quoteAsset !== config.feeMint.toBase58()) throw new Error("the service's quote asset is not the on-chain fee mint");
@@ -208,7 +220,7 @@ async function main(): Promise<void> {
   for (const m of reply.body.matches) say(`  matched at once: match ${m.id}, ${m.quantity} at ${m.price} (it crossed a resting order)`);
   const after = await http("GET", `/v1/books/solana-devnet/${ASSET_MINT.toBase58()}`);
   say(`book: bids ${JSON.stringify(after.body.bids)} asks ${JSON.stringify(after.body.asks)}`);
-  say(`status: ${args.service}/v1/orders/${order.id}`);
+  say(`status: ${ENGINE}/v1/orders/${order.id}`);
 }
 
 main().catch((e: unknown) => {
