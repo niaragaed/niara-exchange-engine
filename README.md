@@ -217,6 +217,50 @@ node --env-file=.env scripts/counter-order.ts --engine-url https://api.niaraglob
 Prices are mockUSDT per share, quantities whole shares (tEQTY's lot is one share). The
 order expires after `--expires-hours` (default 24); the status URL is printed.
 
+### Demo activity on devnet (`scripts/demo-activity.ts`)
+
+**This generates demo activity from wallets Niara controls.** It places real orders,
+makes real matches and has the settlement worker settle them on Solana **devnet**, so the
+chart and the trade history show settled trades. Both sides of every trade are Niara's
+own demo wallets. It is **testnet only** (test tokens `tEQTY` and `mockUSDT`, no real
+assets, no real money; any other cluster is refused) and it is **not market activity**:
+no outside participant took part, and the prices come from a bounded random walk.
+
+**Any video, screenshot, demo or page that shows these trades must say so**: that they are
+testnet trades between wallets the team controls, generated for demonstration.
+
+```bash
+node --env-file=.env scripts/demo-activity.ts --dry-run   # checks and simulates everything; sends and submits nothing
+node --env-file=.env scripts/demo-activity.ts             # 30 min, at most 20 trades, against https://api.niaraglobal.com
+node --env-file=.env scripts/demo-activity.ts --duration 10 --max-trades 8 --engine-url http://127.0.0.1:8787
+```
+
+- **Wallets:** the demo run's `equity-seller` and `equity-buyer`, plus up to 4 new demo
+  traders (`--traders`, default 4) whose keys are created in
+  `~/.config/niara-exchange/devnet/demo-trader-N.json` (mode 600, never printed). They are
+  topped up TO capped targets (`--sol 0.01`, `--usdt 500`, `--eqty 20`; caps 0.05 / 2000 /
+  50): SOL from the demo funder, tokens from `equity-seller`.
+- **Orders:** every 20-60 s one order, alternating a maker (rests at the walk's price:
+  25 mockUSDT within +/-3%, 1-5 lots) and a taker (opposite side, another wallet, same price
+  and size) that matches it. Each order first approves exactly what it needs to the program's
+  vault (one devnet transaction, fees paid by the demo funder, simulated first) and is then
+  sent as a signed intent to `--engine-url` (default `https://api.niaraglobal.com`; https
+  except for localhost). A wallet never has two live orders on one side, and a wallet side
+  is not reused until its match is settled (one delegate per token account).
+- **Every trade is a real, settled match:** the script follows each match until the worker
+  settles it and logs the transaction with its Explorer link in
+  `~/niara-logs/demo-activity-<time>.log`. A failed settlement stops the run. It refuses to
+  start if the service's worker does not settle solana-devnet.
+- **Settlement SOL:** before starting it checks that the settlement operator
+  (`settlement-operator.json`) holds about 0.00075 SOL per planned trade (rent plus fees),
+  and refuses if it is short. This assumes the deployed worker uses that same operator key.
+- **Limits:** `--duration` 1-240 min (default 30), `--max-trades` 1-200 (default 20). The
+  engine's rate limit is respected (at most 3 orders a minute; a 429 waits its
+  `Retry-After`).
+- **Ctrl+C** (or the end of the run) cancels the script's open orders with signed
+  cancellations, then exits. A second Ctrl+C exits at once. Delegations stay on the demo
+  wallets' token accounts (nothing is revoked on-chain).
+
 ### Browser test on devnet: the site's `.env.local` and the order of steps
 
 The site (`niara-site`) enables ordering on solana-devnet when its chain config is
