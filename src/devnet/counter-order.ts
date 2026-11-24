@@ -58,6 +58,7 @@ export function counterIntent(market: CounterMarket, a: CounterOrderArgs): Order
   if (perShare <= 0n || scaled % shareUnits !== 0n) throw new CounterOrderError("price must be positive and a whole number of mockUSDT base units per lot");
   return {
     version: INTENT_VERSION,
+    timeInForce: "GTC",
     chain: "solana-devnet",
     settlement: market.program,
     wallet: a.wallet,

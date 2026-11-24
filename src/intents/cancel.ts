@@ -4,7 +4,7 @@ import { getAddress, hashTypedData, keccak256, recoverTypedDataAddress, toHex, t
 import { CHAINS, isChainId } from "../chains.ts";
 import { EIP712_DOMAIN_NAME, EIP712_DOMAIN_VERSION, checkEvmSignatureFormat } from "./evm.ts";
 import { decodeSolanaSignature } from "./solana.ts";
-import { INTENT_VERSION, IntentError, type IntentErrorCode } from "./types.ts";
+import { IntentError, type IntentErrorCode } from "./types.ts";
 import { NONCE_PATTERN, checkAddress } from "./validate.ts";
 import type { ChainConfig } from "./verify.ts";
 
@@ -17,9 +17,15 @@ import type { ChainConfig } from "./verify.ts";
  * The cancellation is enforced off-chain only: the server takes the order out of the
  * book. Until `settle` verifies intents on-chain (spec §3.6), the on-chain guarantee
  * that a cancelled order never settles is the wallet revoking its delegate/allowance.
+ *
+ * Its version is its own: the cancellation names an order by nonce, which is the same for
+ * every order intent version, so v1 cancels both v1 and v2 orders and did not change
+ * when order intents gained `timeInForce`.
  */
+export const CANCEL_VERSION = 1;
+
 export interface CancelIntent {
-  version: typeof INTENT_VERSION;
+  version: typeof CANCEL_VERSION;
   chain: keyof typeof CHAINS;
   /** Same program/contract as the order intent: Solana program id, EVM NiaraSettlement. */
   settlement: string;
@@ -31,8 +37,8 @@ export interface CancelIntent {
 
 /** Validates a cancellation and returns its canonical form (EVM addresses checksummed). */
 export function validateCancelIntent(cancel: CancelIntent): CancelIntent {
-  if (cancel.version !== INTENT_VERSION) {
-    throw new IntentError("unsupported_version", `cancel version must be ${INTENT_VERSION}`);
+  if (cancel.version !== CANCEL_VERSION) {
+    throw new IntentError("unsupported_version", `cancel version must be ${CANCEL_VERSION}`);
   }
   if (!isChainId(cancel.chain)) throw new IntentError("unknown_chain", `unknown chain: ${String(cancel.chain)}`);
   const kind = CHAINS[cancel.chain].kind;
@@ -56,7 +62,7 @@ export function parseCancelIntent(json: unknown): CancelIntent {
     }
   }
   return validateCancelIntent({
-    version: o["version"] as typeof INTENT_VERSION,
+    version: o["version"] as typeof CANCEL_VERSION,
     chain: o["chain"] as CancelIntent["chain"],
     settlement: o["settlement"] as string,
     wallet: o["wallet"] as string,

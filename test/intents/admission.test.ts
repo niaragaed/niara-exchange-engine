@@ -83,13 +83,13 @@ describe("intent validation", () => {
     expect(validateIntent(evmIntent(evm.wallet.toLowerCase())).wallet).toBe(getAddress(evm.wallet));
   });
 
-  it("requires a 16-byte non-zero hex nonce, a known chain, a side and version 1", () => {
+  it("requires a 16-byte non-zero hex nonce, a known chain, a side and a known version", () => {
     expect(() => validateIntent(solanaIntent(sol.wallet, { nonce: "abc" }))).toThrow(/nonce/);
     expect(() => validateIntent(solanaIntent(sol.wallet, { nonce: "0".repeat(32) }))).toThrow(/nonce/);
     expect(() => validateIntent(solanaIntent(sol.wallet, { nonce: "A".repeat(32) }))).toThrow(/nonce/);
     expect(() => validateIntent({ ...solanaIntent(sol.wallet), chain: "sepolia" as never })).toThrow(/unknown chain/);
     expect(() => validateIntent({ ...solanaIntent(sol.wallet), side: "short" as never })).toThrow(/side/);
-    expect(() => validateIntent({ ...solanaIntent(sol.wallet), version: 2 as never })).toThrow(/version/);
+    expect(() => validateIntent({ ...solanaIntent(sol.wallet), version: 3 as never })).toThrow(/version/);
   });
 
   it("parses amounts only from decimal strings, never from JSON numbers", () => {

@@ -1,7 +1,7 @@
 import { verifyAsync } from "@noble/ed25519";
 import { base58 } from "@scure/base";
 import { CHAINS } from "../chains.ts";
-import { IntentError, type OrderIntent } from "./types.ts";
+import { IntentError, type OrderIntent, type TimeInForce } from "./types.ts";
 import { validateIntent } from "./validate.ts";
 
 /**
@@ -13,6 +13,9 @@ import { validateIntent } from "./validate.ts";
  * intent and checks the signature over it, so two different intents can never share a
  * message. The on-chain check (spec §3.6, Ed25519 program + instructions sysvar) must
  * rebuild the same bytes.
+ *
+ * v2 adds one line, `Time in force`, after the limit price; v1 texts are unchanged. The
+ * first line carries the version, so a v1 and a v2 text never coincide.
  */
 export function solanaIntentMessage(intent: OrderIntent): Uint8Array {
   const i = validateIntent(intent);
@@ -30,12 +33,18 @@ export function solanaIntentMessage(intent: OrderIntent): Uint8Array {
     `Quantity: ${i.quantity} (asset base units)`,
     `Lot size: ${i.lotSize} (asset base units)`,
     `Limit price: ${i.limitPrice} (payment base units per lot)`,
+    ...(i.version === 1 ? [] : [`Time in force: ${TIF_TEXT[i.timeInForce!]}`]),
     `Payment asset: ${i.paymentAsset}`,
     `Nonce: ${i.nonce}`,
     `Expires at: ${i.expiresAt} (unix seconds)`,
   ];
   return new TextEncoder().encode(lines.join("\n"));
 }
+
+const TIF_TEXT: Record<TimeInForce, string> = {
+  GTC: "GTC (rests in the book until filled, cancelled or expired)",
+  IOC: "IOC (fills now up to the limit price; the rest is cancelled)",
+};
 
 /** Decodes a base58 ed25519 signature (64 bytes). */
 export function decodeSolanaSignature(signature: string): Uint8Array {

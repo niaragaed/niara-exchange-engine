@@ -1,7 +1,7 @@
 import { base58 } from "@scure/base";
 import { getAddress, isAddress } from "viem";
 import { CHAINS, isChainId, type ChainKind } from "../chains.ts";
-import { INTENT_VERSION, IntentError, type OrderIntent } from "./types.ts";
+import { SUPPORTED_INTENT_VERSIONS, TIME_IN_FORCE, IntentError, type IntentVersion, type OrderIntent, type TimeInForce } from "./types.ts";
 
 export const U64_MAX = (1n << 64n) - 1n;
 export const U256_MAX = (1n << 256n) - 1n;
@@ -36,8 +36,15 @@ export function checkAddress(kind: ChainKind, field: string, value: unknown): st
  * Throws `IntentError`. The signature is checked separately (`verifyIntentSignature`).
  */
 export function validateIntent(intent: OrderIntent): OrderIntent {
-  if (intent.version !== INTENT_VERSION) {
-    throw new IntentError("unsupported_version", `intent version must be ${INTENT_VERSION}`);
+  if (!(SUPPORTED_INTENT_VERSIONS as readonly unknown[]).includes(intent.version)) {
+    throw new IntentError("unsupported_version", `intent version must be one of ${SUPPORTED_INTENT_VERSIONS.join(", ")}`);
+  }
+  // v1 did not sign a time in force: it is GTC, and an unsigned field may not change that.
+  if (intent.version === 1 && intent.timeInForce !== undefined) {
+    throw new IntentError("invalid_time_in_force", "timeInForce is a v2 field: a v1 intent is GTC");
+  }
+  if (intent.version !== 1 && !TIME_IN_FORCE.includes(intent.timeInForce as TimeInForce)) {
+    throw new IntentError("invalid_time_in_force", "timeInForce must be GTC or IOC");
   }
   if (!isChainId(intent.chain)) throw new IntentError("unknown_chain", `unknown chain: ${String(intent.chain)}`);
   const kind = CHAINS[intent.chain].kind;
@@ -94,6 +101,7 @@ export function parseOrderIntent(json: unknown): OrderIntent {
     "paymentAsset",
     "nonce",
     "expiresAt",
+    "timeInForce",
   ];
   for (const key of Object.keys(o)) {
     if (!allowed.includes(key)) throw new IntentError("malformed", `unexpected field: ${key}`);
@@ -107,7 +115,7 @@ export function parseOrderIntent(json: unknown): OrderIntent {
   };
   if (o["expiresAt"] === undefined) throw new IntentError("invalid_expiry", "expiresAt is required");
   return validateIntent({
-    version: o["version"] as typeof INTENT_VERSION,
+    version: o["version"] as IntentVersion,
     chain: o["chain"] as OrderIntent["chain"],
     settlement: o["settlement"] as string,
     wallet: o["wallet"] as string,
@@ -119,5 +127,6 @@ export function parseOrderIntent(json: unknown): OrderIntent {
     paymentAsset: o["paymentAsset"] as string,
     nonce: o["nonce"] as string,
     expiresAt: o["expiresAt"] as number,
+    ...(o["timeInForce"] !== undefined && { timeInForce: o["timeInForce"] as TimeInForce }),
   });
 }

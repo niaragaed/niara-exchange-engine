@@ -1,7 +1,24 @@
 import type { ChainId } from "../chains.ts";
 import type { Side } from "../engine/types.ts";
 
-export const INTENT_VERSION = 1;
+/**
+ * The current order intent version. v2 adds `timeInForce` to the signed fields; v1 is
+ * still accepted and means GTC. The cancellation format has its own version
+ * (`CANCEL_VERSION`, cancel.ts): it names an order by nonce, whatever the order's version.
+ */
+export const INTENT_VERSION = 2;
+export const SUPPORTED_INTENT_VERSIONS = [1, 2] as const;
+export type IntentVersion = (typeof SUPPORTED_INTENT_VERSIONS)[number];
+
+/**
+ * - GTC (good till cancelled): what is not matched at once rests in the book until
+ *   filled, cancelled or expired.
+ * - IOC (immediate or cancel): matched at once against the book up to the signed limit
+ *   price; whatever is not matched is cancelled (`ioc_unfilled`), never rests. A market
+ *   order is an IOC whose limit price is a price cap (docs/decisions.md).
+ */
+export type TimeInForce = "GTC" | "IOC";
+export const TIME_IN_FORCE: readonly TimeInForce[] = ["GTC", "IOC"];
 
 /**
  * What a wallet signs to place an order (spec §3.6). Units as in the engine:
@@ -12,7 +29,7 @@ export const INTENT_VERSION = 1;
  * EVM: the EIP-712 typed data of `evmIntentTypedData`.
  */
 export interface OrderIntent {
-  version: typeof INTENT_VERSION;
+  version: IntentVersion;
   /** Selects the CAIP-2 chain id that is signed (`CHAINS[chain].caip2`). */
   chain: ChainId;
   /** Solana: the `niara_exchange` program id. EVM: the `NiaraSettlement` address. */
@@ -35,6 +52,13 @@ export interface OrderIntent {
    * (spec §9.12 item 2).
    */
   expiresAt: number;
+  /** v2: required and signed. v1: absent (a v1 intent is GTC). */
+  timeInForce?: TimeInForce;
+}
+
+/** The time in force an intent was signed with: a v1 intent is GTC. */
+export function timeInForceOf(intent: Pick<OrderIntent, "version" | "timeInForce">): TimeInForce {
+  return intent.version === 1 ? "GTC" : intent.timeInForce!;
 }
 
 export class IntentError extends Error {
@@ -57,4 +81,5 @@ export type IntentErrorCode =
   | "not_whole_lots"
   | "invalid_nonce"
   | "invalid_expiry"
+  | "invalid_time_in_force"
   | "invalid_signature_format";

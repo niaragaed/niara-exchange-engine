@@ -64,9 +64,8 @@ import {
   type Side,
 } from "../src/devnet/demo-activity.ts";
 import { checkFundingSources, planTopUp, traderFundingInstructions, traderKeyFile, type TraderTopUp } from "../src/devnet/demo-funding.ts";
-import { solanaCancelMessage, type CancelIntent } from "../src/intents/cancel.ts";
+import { CANCEL_VERSION, solanaCancelMessage, type CancelIntent } from "../src/intents/cancel.ts";
 import { solanaIntentMessage } from "../src/intents/solana.ts";
-import { INTENT_VERSION } from "../src/intents/types.ts";
 import { associatedTokenAddress, decodeConfig, decodeMintDecimals, decodeTokenAccount, isTokenProgram, pdas } from "../src/solana/accounts.ts";
 import { mapTransactionError } from "../src/solana/errors.ts";
 import { PROGRAM_ID } from "../src/solana/idl.ts";
@@ -373,7 +372,7 @@ async function main(): Promise<void> {
       return r.body.order.status;
     },
     cancel: async (o) => {
-      const cancel: CancelIntent = { version: INTENT_VERSION, chain: "solana-devnet", settlement: PROGRAM_ID.toBase58(), wallet: o.wallet.address, nonce: o.nonce };
+      const cancel: CancelIntent = { version: CANCEL_VERSION, chain: "solana-devnet", settlement: PROGRAM_ID.toBase58(), wallet: o.wallet.address, nonce: o.nonce };
       const signature = base58.encode(await signAsync(solanaCancelMessage(cancel), signerOf(o.wallet).secretKey.subarray(0, 32)));
       // The abort signal is not passed: a cancel after Ctrl+C must still go out.
       const r = await http("POST", "/v1/orders/cancel", { cancel, signature });

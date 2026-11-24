@@ -1,4 +1,4 @@
-import { getAddress, hashTypedData, isHex, keccak256, recoverTypedDataAddress, toHex, type Hex } from "viem";
+import { getAddress, hashTypedData, isHex, keccak256, recoverTypedDataAddress, toHex, type Hex, type TypedDataDefinition } from "viem";
 import { CHAINS } from "../chains.ts";
 import { IntentError, type OrderIntent } from "./types.ts";
 import { validateIntent } from "./validate.ts";
@@ -6,7 +6,7 @@ import { validateIntent } from "./validate.ts";
 export const EIP712_DOMAIN_NAME = "Niara Exchange";
 export const EIP712_DOMAIN_VERSION = "1";
 
-/** Field order is part of the type hash: never reorder. `side`: 0 = buy, 1 = sell. */
+/** Field order is part of the type hash: never reorder. `side`: 0 = buy, 1 = sell. v1 intents. */
 export const ORDER_INTENT_TYPES = {
   OrderIntent: [
     { name: "wallet", type: "address" },
@@ -21,47 +21,65 @@ export const ORDER_INTENT_TYPES = {
   ],
 } as const;
 
+/**
+ * v2 intents: v1's fields, then `timeInForce` (0 = GTC, 1 = IOC). Same primary type name
+ * and domain; the type hash differs, so a v1 and a v2 digest never coincide.
+ */
+export const ORDER_INTENT_V2_TYPES = {
+  OrderIntent: [...ORDER_INTENT_TYPES.OrderIntent, { name: "timeInForce", type: "uint8" }],
+} as const;
+
 export const ORDER_INTENT_TYPE =
   "OrderIntent(address wallet,uint8 side,address asset,uint256 quantity,uint256 lotSize," +
   "uint256 limitPrice,address paymentAsset,bytes16 nonce,uint64 expiresAt)";
 
-/** `keccak256(ORDER_INTENT_TYPE)`, for the Solidity verifier. */
+export const ORDER_INTENT_V2_TYPE =
+  "OrderIntent(address wallet,uint8 side,address asset,uint256 quantity,uint256 lotSize," +
+  "uint256 limitPrice,address paymentAsset,bytes16 nonce,uint64 expiresAt,uint8 timeInForce)";
+
+/** `keccak256(ORDER_INTENT_TYPE)` (v1), for the Solidity verifier. */
 export const ORDER_INTENT_TYPEHASH = keccak256(toHex(ORDER_INTENT_TYPE));
+/** `keccak256(ORDER_INTENT_V2_TYPE)`, for the Solidity verifier. */
+export const ORDER_INTENT_V2_TYPEHASH = keccak256(toHex(ORDER_INTENT_V2_TYPE));
 
 // secp256k1 group order / 2: signatures with a larger s are rejected, as OpenZeppelin's
 // ECDSA does, so each intent has one valid signature encoding.
 const SECP256K1_HALF_N = 0x7fffffffffffffffffffffffffffffff5d576e7357a4501ddfe92f46681b20a0n;
 
 /**
- * EIP-712 typed data for `intent`. Domain: name "Niara Exchange", version "1", the
- * chain's EIP-155 id, and `verifyingContract` = the NiaraSettlement address.
+ * EIP-712 typed data for `intent`, with the v1 or v2 type by `intent.version`. Domain:
+ * name "Niara Exchange", version "1", the chain's EIP-155 id, and `verifyingContract` =
+ * the NiaraSettlement address (unchanged in v2: the contract did not change).
  */
-export function evmIntentTypedData(intent: OrderIntent) {
+export function evmIntentTypedData(intent: OrderIntent): TypedDataDefinition {
   const i = validateIntent(intent);
   const chain = CHAINS[i.chain];
   if (chain.kind !== "evm" || chain.evmChainId === null) {
     throw new IntentError("unknown_chain", `${i.chain} is not an EVM chain`);
   }
+  const domain = {
+    name: EIP712_DOMAIN_NAME,
+    version: EIP712_DOMAIN_VERSION,
+    chainId: chain.evmChainId,
+    verifyingContract: getAddress(i.settlement),
+  };
+  const message = {
+    wallet: getAddress(i.wallet),
+    side: i.side === "buy" ? 0 : 1,
+    asset: getAddress(i.asset),
+    quantity: i.quantity,
+    lotSize: i.lotSize,
+    limitPrice: i.limitPrice,
+    paymentAsset: getAddress(i.paymentAsset),
+    nonce: `0x${i.nonce}` as Hex,
+    expiresAt: BigInt(i.expiresAt),
+  };
+  if (i.version === 1) return { domain, types: ORDER_INTENT_TYPES, primaryType: "OrderIntent" as const, message };
   return {
-    domain: {
-      name: EIP712_DOMAIN_NAME,
-      version: EIP712_DOMAIN_VERSION,
-      chainId: chain.evmChainId,
-      verifyingContract: getAddress(i.settlement),
-    },
-    types: ORDER_INTENT_TYPES,
+    domain,
+    types: ORDER_INTENT_V2_TYPES,
     primaryType: "OrderIntent" as const,
-    message: {
-      wallet: getAddress(i.wallet),
-      side: i.side === "buy" ? 0 : 1,
-      asset: getAddress(i.asset),
-      quantity: i.quantity,
-      lotSize: i.lotSize,
-      limitPrice: i.limitPrice,
-      paymentAsset: getAddress(i.paymentAsset),
-      nonce: `0x${i.nonce}` as Hex,
-      expiresAt: BigInt(i.expiresAt),
-    },
+    message: { ...message, timeInForce: i.timeInForce === "IOC" ? 1 : 0 },
   };
 }
 

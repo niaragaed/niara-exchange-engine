@@ -3,7 +3,7 @@ import { CHAINS, type ChainId } from "../chains.ts";
 import type { OrderInput } from "../engine/types.ts";
 import { verifyEvmIntent } from "./evm.ts";
 import { verifySolanaIntent } from "./solana.ts";
-import { IntentError, type IntentErrorCode, type OrderIntent } from "./types.ts";
+import { IntentError, timeInForceOf, type IntentErrorCode, type OrderIntent } from "./types.ts";
 import { validateIntent } from "./validate.ts";
 
 /** Verifies `signature` over `intent` with the scheme of the intent's chain. */
@@ -32,7 +32,8 @@ export type AdmissionRejectReason =
   | "wrong_payment_asset"
   | "expired"
   | "expiry_too_far"
-  | "bad_signature";
+  | "bad_signature"
+  | "unsupported_time_in_force";
 
 export type AdmissionResult =
   | { ok: true; intent: OrderIntent; signature: string; order: OrderInput }
@@ -84,6 +85,8 @@ export async function admitOrderIntent(args: {
     throw e;
   }
   if (!valid) return reject("bad_signature", "signature does not match the wallet and intent");
+  // The engine does not run IOC yet: refused rather than treated as GTC.
+  if (timeInForceOf(intent) !== "GTC") return reject("unsupported_time_in_force", "IOC orders are not accepted yet");
   return {
     ok: true,
     intent,
