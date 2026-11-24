@@ -1,4 +1,5 @@
 import type { Side } from "../engine/types.ts";
+import type { OrderIntent } from "./types.ts";
 
 /**
  * Market orders. TESTNET ONLY.
@@ -50,4 +51,27 @@ export function marketOrderLimitPrice(
   if (side === "buy") return (bestOppositePrice * (10_000n + bps)) / 10_000n;
   const floor = (bestOppositePrice * (10_000n - bps) + 9_999n) / 10_000n;
   return floor < 1n ? 1n : floor;
+}
+
+/**
+ * What the wallet must approve before submitting `intent` (Solana: delegate to the
+ * program's vault PDA; EVM: allowance to NiaraSettlement), exactly what the service
+ * checks at admission (spec §3.5, `orderNeed`): a sell, its quantity of the asset; a
+ * buy, quantity / lotSize x LIMIT price in the payment asset. For an IOC buy that is
+ * the cap, not the expected price: a market buy approves quantity x cap and pays at
+ * most that (each fill at its maker's price).
+ *
+ * The remainder's allowance is not reused. Approve exactly this for each order: an
+ * approval REPLACES the previous one (SPL `approve`, ERC-20 `approve`), so what an IOC
+ * left unused (its unfilled part, and the gap between the cap and the prices paid) is
+ * overwritten by the next order's approval rather than carried over. The engine never
+ * comes back to an IOC either: it never rests, and a failed match cancels its released
+ * quantity instead of putting it back in the book.
+ */
+export function requiredApproval(
+  intent: Pick<OrderIntent, "side" | "asset" | "paymentAsset" | "quantity" | "lotSize" | "limitPrice">,
+): { mint: string; amount: bigint } {
+  return intent.side === "sell"
+    ? { mint: intent.asset, amount: intent.quantity }
+    : { mint: intent.paymentAsset, amount: (intent.quantity / intent.lotSize) * intent.limitPrice };
 }

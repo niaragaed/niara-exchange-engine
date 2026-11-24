@@ -454,6 +454,30 @@ describe("on-chain delegate check (spec §3.5), with a fake checker", () => {
     app = createApp(service, { maxBodyBytes: MAX_BODY });
   });
 
+  it("an IOC buy must be covered for quantity x its limit price (the cap), not the price it will pay", async () => {
+    await submit(alice, sol(alice, { side: "sell", quantity: 2n * SOL_LOT, limitPrice: 24_000_000n }));
+    const seen: { wallet: string; amount: bigint }[] = [];
+    const recording: CoverageChecker = {
+      check: async (needs) => {
+        seen.push(...needs.map((n) => ({ wallet: n.wallet, amount: n.amount })));
+        return fake.check(needs);
+      },
+    };
+    service = await OrderService.start({ ...deps(), coverage: { "solana-devnet": recording } });
+    app = createApp(service, { maxBodyBytes: MAX_BODY });
+    const r = await submit(bob, sol(bob, { version: 2, timeInForce: "IOC", side: "buy", quantity: 5n * SOL_LOT, limitPrice: 25_250_000n }));
+    expect(r.status).toBe(201);
+    expect(seen.find((n) => n.wallet === bob.wallet)?.amount).toBe(5n * 25_250_000n);
+    // It paid 2 lots at 24 and its remainder was cancelled: it never rests, so it is never
+    // checked again as a maker, and nothing counts its unused allowance for it.
+    expect(r.body.order).toMatchObject({ status: "cancelled", cancelReason: "ioc_unfilled" });
+    expect(r.body.matches[0].paymentAmount).toBe((2n * 24_000_000n).toString());
+    uncovered.set(bob.wallet, "TEST: allowance gone");
+    seen.length = 0;
+    await submit(mallory, sol(mallory, { side: "sell", limitPrice: 20_000_000n }));
+    expect(seen.some((n) => n.wallet === bob.wallet)).toBe(false);
+  });
+
   it("refuses a new order its wallet has not delegated, and stores nothing", async () => {
     uncovered.set(alice.wallet, "the token account does not delegate to the vault");
     const r = await submit(alice, sol(alice, { side: "sell" }));

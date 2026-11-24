@@ -5,7 +5,9 @@ import {
   MARKET_ORDER_MAX_SLIPPAGE_BPS,
   MarketOrderError,
   marketOrderLimitPrice,
+  requiredApproval,
 } from "../../src/intents/market-order.ts";
+import { orderNeed } from "../../src/solana/coverage.ts";
 
 /** Market order = IOC with a price cap set by the client from the best opposite price. */
 
@@ -42,6 +44,31 @@ describe("market order price cap", () => {
         expect(sell * 10_000n >= best * (10_000n - BigInt(bps))).toBe(true);
       }),
       { numRuns: 500 },
+    );
+  });
+});
+
+describe("approvals", () => {
+  const base = { asset: "TEST-ASSET", paymentAsset: "TEST-USDT", quantity: 7_000_000n, lotSize: 1_000_000n };
+  it("an IOC buy approves quantity x its limit price (the cap), a sell its quantity", () => {
+    const cap = marketOrderLimitPrice("buy", 25_000_000n); // 25.25
+    expect(requiredApproval({ ...base, side: "buy", limitPrice: cap })).toEqual({ mint: "TEST-USDT", amount: 7n * 25_250_000n });
+    expect(requiredApproval({ ...base, side: "sell", limitPrice: 1n })).toEqual({ mint: "TEST-ASSET", amount: 7_000_000n });
+  });
+
+  it("is exactly what the service checks at admission (orderNeed on the whole quantity)", () => {
+    fc.assert(
+      fc.property(
+        fc.constantFrom("buy" as const, "sell" as const),
+        fc.bigInt({ min: 1n, max: 1000n }),
+        fc.bigInt({ min: 1n, max: 10n ** 9n }),
+        fc.bigInt({ min: 1n, max: 10n ** 12n }),
+        (side, lots, lotSize, limitPrice) => {
+          const i = { ...base, side, wallet: "TEST-WALLET", quantity: lots * lotSize, lotSize, limitPrice };
+          const need = orderNeed({ ...i, remaining: i.quantity });
+          expect(requiredApproval(i)).toEqual({ mint: need.mint, amount: need.amount });
+        },
+      ),
     );
   });
 });
