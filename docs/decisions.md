@@ -38,17 +38,36 @@ validity.
 
 Signed fields: version, chain (CAIP-2), settlement program/contract, wallet,
 side, asset, quantity, lot size, limit price, payment asset (USDT), nonce
-(16 random bytes) and **expiry** (unix seconds, required).
+(16 random bytes), **expiry** (unix seconds, required) and, from v2, the
+**time in force** (`GTC` or `IOC`, below).
+
+- **Versions.** v2 is current. v1 is still accepted and means `GTC`; a v1
+  intent that carries `timeInForce` is refused (v1 never signed it, so an
+  unsigned field may not change what the wallet agreed to). v2 requires it.
 
 - **Solana**: a fixed, labeled UTF-8 text with the testnet notice, signed with
   `signMessage` (552 bytes for a typical intent). The verifier rebuilds the
   text from the structured intent and never parses signed text. Strict
-  ed25519 (`zip215: false`), like the Ed25519 program's `verify_strict`.
+  ed25519 (`zip215: false`), like the Ed25519 program's `verify_strict`. v2
+  changes the first line to `Niara Exchange order intent v2` and adds one line
+  after the limit price: `Time in force: GTC (rests in the book until filled,
+  cancelled or expired)` or `Time in force: IOC (fills now up to the limit
+  price; the rest is cancelled)`. A v1 text is unchanged.
 - **EVM**: EIP-712. Domain `{ name: "Niara Exchange", version: "1", chainId,
   verifyingContract: NiaraSettlement }`; type
   `OrderIntent(address wallet,uint8 side,address asset,uint256 quantity,uint256 lotSize,uint256 limitPrice,address paymentAsset,bytes16 nonce,uint64 expiresAt)`
-  with `side` 0 = buy, 1 = sell. Only 65-byte, `v` 27/28, low-s signatures,
-  as OpenZeppelin `ECDSA`.
+  with `side` 0 = buy, 1 = sell (v1). v2 appends `uint8 timeInForce`
+  (0 = GTC, 1 = IOC):
+  `OrderIntent(address wallet,uint8 side,address asset,uint256 quantity,uint256 lotSize,uint256 limitPrice,address paymentAsset,bytes16 nonce,uint64 expiresAt,uint8 timeInForce)`.
+  Same primary type name and domain (domain `version` stays `"1"`: the
+  contract did not change); the type hash differs, so a v1 and a v2 digest
+  never coincide. Only 65-byte, `v` 27/28, low-s signatures, as OpenZeppelin
+  `ECDSA`.
+- **No contract change.** Neither `niara_exchange::settle` nor
+  `NiaraSettlement.settle` verifies intents today (the operator is the
+  documented trust assumption of spec §3.6), so a new signed field changes no
+  program or contract. The on-chain signed-intents milestone must rebuild both
+  versions (v1 and v2 texts, both type hashes).
 - **Amounts** must fit the on-chain width: u64 on Solana (including the
   notional, which becomes `payment_amount`), uint256 on EVM. In JSON they are
   decimal strings only.
@@ -67,6 +86,11 @@ program/contract, wallet and **nonce**. The nonce is unique per
 (chain, wallet), so it names exactly one order, ever: the cancellation needs
 no nonce or expiry of its own, and replaying it only re-cancels a cancelled
 order.
+
+Its version is its own (`CANCEL_VERSION = 1`), not the order intent's: a
+cancellation names the order by nonce, which is the same in every intent
+version, so the v1 cancellation cancels v1 and v2 orders alike and did not
+change with v2.
 
 - **Solana**: `signMessage` text, verified like the order intent (rebuilt from
   the structured cancellation, strict ed25519). Its first line differs from
@@ -100,13 +124,14 @@ order.
   | `by_wallet` | cancelled | `POST /v1/orders/cancel`; `cancel_signature` holds the wallet's signature exactly as sent |
   | `self_trade_prevention` | cancelled | the engine, newest order of a wallet that would trade with itself |
   | `below_min_notional` | cancelled | the engine, remainder or next match below the minimum |
+  | `ioc_unfilled` | cancelled | the engine, the unmatched remainder of an IOC order (migration `20261124120000`) |
   | `expired` | expired | the expiry sweep, matching, or a failed match |
   | `stale` | stale | the delegate check, or a failed match (`match_reversals`) |
 
   The reason follows the status (table check); the signature is present
   exactly for `by_wallet`. The signed message is not stored: it is rebuilt
   from the order (chain, wallet, nonce), the chain's settlement
-  program/contract and the intent version, as for the order intent. Once
+  program/contract and the cancellation version (1), as for the order intent. Once
   written, the signature never changes and the reason changes only from
   `stale` (a stale order can still be cancelled by its wallet, and becomes
   `by_wallet`). The service derives the reason from the engine's events
@@ -145,6 +170,9 @@ order.
   remainder is worth less than the minimum at the best ask). The engine never
   skips the best price to reach a larger match. **Final** (confirmed by the
   founder on 2026-11-20).
+- **Time in force**: a `GTC` order's remainder rests; an `IOC` order matches
+  at once up to its limit and its remainder is cancelled (`ioc_unfilled`).
+  Details in "Time in force and market orders" below.
 - **Restart**: `restore` rebuilds the books from the non-terminal orders in
   their original `seq`, with their fills, on a fresh engine; `exportState`
   returns everything that decides future behavior (markets, each book's
@@ -597,6 +625,49 @@ Production testnet API at `https://api.niaraglobal.com`. Testnet only.
   listens, so a bad deploy fails before it goes live: database connection and
   TLS, RPC chain checks, operator keys.
 
+## Time in force and market orders (intent v2, migration `20261124120000`)
+
+- **IOC** (immediate or cancel): matched at once against the book, at the
+  makers' prices, never beyond the signed limit price; whatever is not matched
+  is cancelled with `cancel_reason = 'ioc_unfilled'`. An IOC **never rests**:
+  not at placement, and not later. Self-trade prevention and the minimum
+  notional apply as to any taker (their reasons win when they cut the order
+  first); a remainder below the minimum is cancelled as `ioc_unfilled`, since
+  it was never going to rest.
+- **Failed matches.** An innocent IOC whose match fails gets its quantity
+  back as `released`, and that quantity is cancelled (`ioc_unfilled`) instead
+  of re-entering the book: re-entering minutes later would not be
+  "immediate". An IOC at fault becomes stale, as any order. A filled IOC is
+  kept in memory after a restart (a failed match may still release it);
+  `restore` refuses an IOC in a resting status.
+- **Market order** = an IOC whose signed limit price is a **price cap** the
+  client sets from the best opposite price: best ask + slippage for a buy
+  (rounded down), best bid - slippage for a sell (rounded up, at least 1).
+  **Recommended default 1%, maximum 5%** (`marketOrderLimitPrice`,
+  `src/intents/market-order.ts`, refuses more and refuses an empty opposite
+  side). The engine knows nothing of slippage and enforces only the signed
+  limit, so the cap the wallet sees and signs is the worst price it can get.
+- **Approvals.** An IOC buy must be covered for `quantity / lot_size x
+  limit_price`, the cap, not the expected price; a sell for its quantity
+  (`requiredApproval` = the service's `orderNeed`). Settlement pulls each
+  match's `payment_amount` at the maker's price, within the approval. The
+  unused allowance (unfilled part, and the gap between the cap and the prices
+  paid) is **not reused**: the client approves exactly each order's amount, and
+  an approval replaces the previous one (SPL and ERC-20 `approve`), so the next
+  order overwrites it; the engine never comes back to an IOC, so nothing counts
+  it for that order again. The allowance stays on-chain until then; a wallet
+  that wants it gone revokes it.
+- **Schema.** `orders.time_in_force` (`gtc`, `ioc`), not null, default `gtc`
+  (existing rows, and inserts by a service built before it); immutable like
+  the other signed fields. Checks: an IOC is never `open` or
+  `partially_filled`; `ioc_unfilled` only on IOC orders; `intent_version = 1`
+  implies `gtc`. The new enum value is compared as text only, so the file
+  applies in one transaction. Not granted to `anon`/`authenticated`.
+- **Deploy order.** Apply the migration, then deploy. The service requires it
+  (`REQUIRED_MIGRATIONS`) and checks before listening, so a deployment that
+  lands first exits without ever answering `/health` and the previous one
+  keeps serving; the previous build keeps working on the migrated schema.
+
 ## Not done yet
 
 - HyperEVM testnet: no v1 deployment yet; its settings are in the config
@@ -712,3 +783,27 @@ These go to `niara-exchange-solana`, which owns the spec.
     the next contract version: the EVM contracts are not upgradeable, and the
     worker already records the settle transaction's hash, so the log scan
     only runs to recover a transaction the database does not have.
+12. **§3.6, order intent v2.** Add `timeInForce` (`GTC` | `IOC`) to the signed
+    fields: Solana text header `Niara Exchange order intent v2` and the line
+    `Time in force: ...` after the limit price; EIP-712 type
+    `OrderIntent(...,uint64 expiresAt,uint8 timeInForce)` (0 = GTC, 1 = IOC),
+    same domain. v1 stays valid and means GTC. The on-chain signed-intents
+    milestone must rebuild both versions.
+13. **§3.6, cancellation version.** The cancellation keeps its own version
+    (1), independent of the order intent's: it names the order by nonce for
+    either version.
+14. **§2 / §5, order types.** Market orders are IOC orders with a price cap the
+    client sets from the best opposite price (default slippage 1%, at most 5%,
+    client-side); the engine enforces only the signed limit. An IOC never rests
+    and is never re-entered after a failed match (its released quantity is
+    cancelled). No program or contract change.
+15. **§5, schema.** `orders.time_in_force` (`gtc`/`ioc`, default `gtc`,
+    immutable) and the cancel reason `ioc_unfilled`, with the checks of
+    migration `20261124120000_time_in_force`. Also correct the "Cancellation
+    audit trail (proposed, not yet in a migration)" paragraph: it is in
+    migration `20261120130000_cancel_reasons`, with `expired`, `stale` and now
+    `ioc_unfilled` among the reasons.
+16. **§3.5, IOC approvals.** An IOC buy is covered by `quantity / lot_size x
+    limit_price` (the cap); its unused allowance is not reused, because each
+    order approves exactly its own amount and an approval replaces the
+    previous one.
