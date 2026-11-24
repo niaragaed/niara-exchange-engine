@@ -316,6 +316,31 @@ describe("expiry", () => {
   });
 });
 
+describe("IOC orders (intent v2)", () => {
+  it("an IOC buy matches what is within its limit, the rest is cancelled (ioc_unfilled) and stored, nothing rests", async () => {
+    const ask = (await submit(alice, sol(alice, { side: "sell", quantity: 2n * SOL_LOT, limitPrice: 24_000_000n }))).body.order;
+    await submit(mallory, sol(mallory, { side: "sell", quantity: 2n * SOL_LOT, limitPrice: 30_000_000n }));
+    const r = await submit(bob, sol(bob, { version: 2, timeInForce: "IOC", side: "buy", quantity: 5n * SOL_LOT, limitPrice: 25_000_000n }));
+    expect(r.status).toBe(201);
+    expect(r.body.matches.map((m: { sellOrderId: string; price: string }) => [m.sellOrderId, m.price])).toEqual([[ask.id, "24000000"]]);
+    expect(r.body.order).toMatchObject({ status: "cancelled", cancelReason: "ioc_unfilled", timeInForce: "IOC", filledQuantity: "2000000" });
+    expect(await loadOrder(t.db, r.body.order.id)).toMatchObject({ status: "cancelled", cancelReason: "ioc_unfilled", timeInForce: "IOC", intentVersion: 2 });
+    expect((await call(`/v1/orders/${r.body.order.id}`)).body.order).toMatchObject({ timeInForce: "IOC", cancelReason: "ioc_unfilled" });
+    expect((await call(`/v1/books/solana-devnet/${SOL_ASSET}`)).body.bids).toEqual([]);
+    // A restart rebuilds the same engine (the IOC is not in any book).
+    const before = service.state();
+    expect((await OrderService.start(deps())).state()).toEqual(before);
+  });
+
+  it("v1 and v2 GTC orders rest as before", async () => {
+    const v1 = await submit(alice, sol(alice, { side: "sell" }));
+    const v2 = await submit(mallory, sol(mallory, { version: 2, timeInForce: "GTC", side: "sell", limitPrice: 26_000_000n }));
+    expect([v1.body.order.status, v1.body.order.timeInForce]).toEqual(["open", "GTC"]);
+    expect([v2.body.order.status, v2.body.order.timeInForce]).toEqual(["open", "GTC"]);
+    expect(await loadOrder(t.db, v1.body.order.id)).toMatchObject({ timeInForce: "GTC", intentVersion: 1 });
+  });
+});
+
 describe("restart and failure", () => {
   it("a restarted service has the same engine state", async () => {
     await submit(alice, sol(alice, { side: "sell", quantity: 4n * SOL_LOT }));
@@ -366,7 +391,7 @@ describe("single instance", () => {
     query: async <T>(sql: string) => {
       if (sql.includes("pg_try_advisory_lock")) return { rows: [{ locked: answers.locked }] as T[] };
       if (sql.includes("pg_has_role")) return { rows: [{ ok: answers.member }] as T[] };
-      if (sql.includes("match_reversals")) return { rows: [{ match_reversals: true, cancel_reasons: true, listing_metadata: true }] as T[] };
+      if (sql.includes("match_reversals")) return { rows: [{ match_reversals: true, cancel_reasons: true, listing_metadata: true, time_in_force: true }] as T[] };
       throw new Error(`unexpected query: ${sql}`);
     },
     transaction: async () => {

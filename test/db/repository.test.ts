@@ -61,6 +61,7 @@ function row(overrides: Partial<OrderRow> & Pick<OrderRow, "seq" | "wallet" | "s
     // The reason the status needs (migration 20261120130000), unless the test sets one.
     cancelReason: overrides.cancelReason ?? defaultReason(overrides.status ?? "open"),
     cancelSignature: overrides.cancelSignature ?? null,
+    timeInForce: overrides.timeInForce ?? "GTC",
   };
 }
 

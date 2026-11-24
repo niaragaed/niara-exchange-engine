@@ -36,7 +36,7 @@ describe("listing metadata migration", () => {
       onFatal: () => undefined,
     }).catch((e: unknown) => e);
     expect(err).toBeInstanceOf(SchemaNotReadyError);
-    expect((err as SchemaNotReadyError).missing).toEqual(["20261122120000_listing_metadata"]);
+    expect((err as SchemaNotReadyError).missing).toEqual(["20261122120000_listing_metadata", "20261124120000_time_in_force"]);
   });
 
   it("applies over existing listings (null metadata), and checks what is stored", async () => {

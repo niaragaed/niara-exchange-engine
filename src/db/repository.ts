@@ -1,6 +1,6 @@
 import type { ChainId } from "../chains.ts";
 import type { CancelReason, OrderStatus } from "../engine/engine.ts";
-import type { AssetClass, ListingStatus, Match, Side } from "../engine/types.ts";
+import type { AssetClass, ListingStatus, Match, Side, TimeInForce } from "../engine/types.ts";
 import type { Database, Queryable } from "./database.ts";
 
 /**
@@ -147,6 +147,8 @@ export interface OrderRow {
   /** Migration 20261120130000: why the order left the book; the wallet's signature if it cancelled. */
   cancelReason?: StoredCancelReason | null;
   cancelSignature?: string | null;
+  /** Migration 20261124120000: signed with a v2 intent; v1 orders are GTC. Absent = GTC. */
+  timeInForce?: TimeInForce;
 }
 
 /**
@@ -165,7 +167,7 @@ export interface OrderClosing {
 export const ORDER_COLUMNS = `id::text, seq::text, chain_id, asset, side::text, quantity::text, lot_size::text,
   limit_price::text, payment_asset, wallet, nonce, extract(epoch from expires_at)::bigint::text as expires_at,
   intent_version, intent_signature, filled_quantity::text, settled_quantity::text, released_quantity::text,
-  voided_quantity::text, status::text, cancel_reason::text, cancel_signature`;
+  voided_quantity::text, status::text, cancel_reason::text, cancel_signature, time_in_force::text`;
 
 export interface RawOrder {
   id: string;
@@ -189,6 +191,7 @@ export interface RawOrder {
   status: OrderStatus;
   cancel_reason: StoredCancelReason | null;
   cancel_signature: string | null;
+  time_in_force: "gtc" | "ioc";
 }
 
 export function toOrderRow(o: RawOrder): OrderRow {
@@ -214,6 +217,7 @@ export function toOrderRow(o: RawOrder): OrderRow {
     status: o.status,
     cancelReason: o.cancel_reason,
     cancelSignature: o.cancel_signature,
+    timeInForce: o.time_in_force === "ioc" ? "IOC" : "GTC",
   };
 }
 
@@ -281,9 +285,10 @@ export async function insertOrder(tx: Queryable, o: OrderRow): Promise<void> {
   await tx.query(
     `insert into public.orders
        (id, seq, chain_id, asset, side, quantity, lot_size, limit_price, payment_asset, wallet, nonce,
-        expires_at, intent_version, intent_signature, filled_quantity, status, cancel_reason, cancel_signature)
+        expires_at, intent_version, intent_signature, filled_quantity, status, cancel_reason, cancel_signature,
+        time_in_force)
      overriding system value
-     values ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, to_timestamp($12), $13, $14, $15, $16, $17, $18)`,
+     values ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, to_timestamp($12), $13, $14, $15, $16, $17, $18, $19)`,
     [
       o.id,
       o.seq,
@@ -303,6 +308,7 @@ export async function insertOrder(tx: Queryable, o: OrderRow): Promise<void> {
       o.status,
       o.cancelReason ?? null,
       o.cancelSignature ?? null,
+      o.timeInForce === "IOC" ? "ioc" : "gtc",
     ],
   );
 }
@@ -366,19 +372,22 @@ export const REQUIRED_MIGRATIONS = [
   "20261120120000_match_reversals",
   "20261120130000_cancel_reasons",
   "20261122120000_listing_metadata",
+  "20261124120000_time_in_force",
 ] as const;
 
 /** The required migrations that are not applied yet (empty when the schema is ready). */
 export async function missingMigrations(tx: Queryable): Promise<string[]> {
-  const r = await tx.query<{ match_reversals: boolean; cancel_reasons: boolean; listing_metadata: boolean }>(
+  const r = await tx.query<{ match_reversals: boolean; cancel_reasons: boolean; listing_metadata: boolean; time_in_force: boolean }>(
     `select to_regclass('public.match_reversals') is not null as match_reversals,
             exists (select 1 from information_schema.columns
                      where table_schema = 'public' and table_name = 'orders' and column_name = 'cancel_reason') as cancel_reasons,
             exists (select 1 from information_schema.columns
-                     where table_schema = 'public' and table_name = 'listings' and column_name = 'symbol') as listing_metadata`,
+                     where table_schema = 'public' and table_name = 'listings' and column_name = 'symbol') as listing_metadata,
+            exists (select 1 from information_schema.columns
+                     where table_schema = 'public' and table_name = 'orders' and column_name = 'time_in_force') as time_in_force`,
   );
   const row = r.rows[0];
-  return REQUIRED_MIGRATIONS.filter((m) => row?.[m.slice(15) as "match_reversals" | "cancel_reasons" | "listing_metadata"] !== true);
+  return REQUIRED_MIGRATIONS.filter((m) => row?.[m.slice(15) as "match_reversals" | "cancel_reasons" | "listing_metadata" | "time_in_force"] !== true);
 }
 
 // ---------------------------------------------------------------------------

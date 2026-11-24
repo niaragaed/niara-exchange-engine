@@ -100,8 +100,9 @@ export async function persistPlacement(
     intentSignature: record.intentSignature,
     filledQuantity: o.filledQuantity,
     status: o.status,
-    // A new order can leave the book at once (self-trade prevention, below the minimum).
+    // A new order can leave the book at once (self-trade prevention, below the minimum, IOC).
     cancelReason: closingOf(placed.events, o.id)?.reason ?? null,
+    timeInForce: o.timeInForce ?? "GTC",
   });
   for (const m of placed.matches) await insertMatch(tx, m, dbAssetOf(catalog, m));
   // The new order is already written in its final state.

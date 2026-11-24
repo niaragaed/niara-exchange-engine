@@ -40,6 +40,7 @@ export async function rebuildEngine(
       limitPrice: r.limitPrice,
       lotSize: r.lotSize,
       expiresAt: r.expiresAt,
+      timeInForce: r.timeInForce ?? "GTC",
       seq: r.seq,
       filledQuantity: r.filledQuantity,
       releasedQuantity: r.releasedQuantity ?? 0n,

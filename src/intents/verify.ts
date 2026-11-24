@@ -32,8 +32,7 @@ export type AdmissionRejectReason =
   | "wrong_payment_asset"
   | "expired"
   | "expiry_too_far"
-  | "bad_signature"
-  | "unsupported_time_in_force";
+  | "bad_signature";
 
 export type AdmissionResult =
   | { ok: true; intent: OrderIntent; signature: string; order: OrderInput }
@@ -85,8 +84,6 @@ export async function admitOrderIntent(args: {
     throw e;
   }
   if (!valid) return reject("bad_signature", "signature does not match the wallet and intent");
-  // The engine does not run IOC yet: refused rather than treated as GTC.
-  if (timeInForceOf(intent) !== "GTC") return reject("unsupported_time_in_force", "IOC orders are not accepted yet");
   return {
     ok: true,
     intent,
@@ -102,6 +99,7 @@ export async function admitOrderIntent(args: {
       limitPrice: intent.limitPrice,
       lotSize: intent.lotSize,
       expiresAt: intent.expiresAt,
+      timeInForce: timeInForceOf(intent),
     },
   };
 }

@@ -3,6 +3,7 @@ import { serve } from "@hono/node-server";
 import { getConnInfo } from "@hono/node-server/conninfo";
 import { ConfigError, describeConfig, loadConfig, redactSecrets } from "../config.ts";
 import { connectPg } from "../db/pg.ts";
+import { missingMigrations } from "../db/repository.ts";
 import { randomMatchId } from "../engine/random-id.ts";
 import { solanaCoverageChecker } from "../solana/coverage.ts";
 import { PROGRAM_ID } from "../solana/idl.ts";
@@ -63,6 +64,10 @@ async function main(): Promise<void> {
   const db = await connectPg(config.databaseUrl, (err) => {
     if (!stopping) die("database_connection_lost", err);
   });
+  // Before listening: a deployment that lands before its migrations exits without ever
+  // answering /health, so the platform keeps the previous deployment serving.
+  const missing = await missingMigrations(db);
+  if (missing.length > 0) die("refused_to_start", new SchemaNotReadyError(missing));
 
   // Solana devnet (genesis-checked): on-chain delegate checks (spec §3.5).
   const solana = await connectDevnet(config.solanaRpcUrl);
