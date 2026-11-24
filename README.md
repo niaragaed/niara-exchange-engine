@@ -64,6 +64,18 @@ The order service refuses to start while a migration it writes through is missin
 | `GET /v1/books/:chain/:asset` | | Public book: price levels only |
 | `GET /health` | | Liveness, with the testnet notice |
 
+**Order types.** Intents are v2 (v1 is still accepted, as GTC) and sign a
+`timeInForce`:
+
+- `GTC`: a limit order; what does not match at once rests in the book.
+- `IOC`: matches at once against the book up to the signed limit price; the
+  rest is cancelled (`cancelReason: "ioc_unfilled"`) and never rests.
+- **Market order** = an `IOC` whose limit price is a price cap the client sets
+  from the best opposite price plus (buy) or minus (sell) a slippage:
+  **1% by default, 5% at most** (`marketOrderLimitPrice` in
+  `src/intents/market-order.ts`). The engine only enforces the signed limit.
+  A market buy approves quantity x cap.
+
 Lists page with `limit` and `before` (the `next` cursor of the previous page).
 Browsers may call the API only from the exact origins in `CORS_ORIGINS`.
 
