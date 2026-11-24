@@ -1,5 +1,7 @@
 import type { ChainId } from "../chains.ts";
-import type { Side } from "../engine/types.ts";
+import type { Side, TimeInForce } from "../engine/types.ts";
+
+export type { TimeInForce } from "../engine/types.ts";
 
 /**
  * The current order intent version. v2 adds `timeInForce` to the signed fields; v1 is
@@ -17,7 +19,6 @@ export type IntentVersion = (typeof SUPPORTED_INTENT_VERSIONS)[number];
  *   price; whatever is not matched is cancelled (`ioc_unfilled`), never rests. A market
  *   order is an IOC whose limit price is a price cap (docs/decisions.md).
  */
-export type TimeInForce = "GTC" | "IOC";
 export const TIME_IN_FORCE: readonly TimeInForce[] = ["GTC", "IOC"];
 
 /**

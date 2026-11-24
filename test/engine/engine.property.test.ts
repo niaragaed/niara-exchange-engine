@@ -27,7 +27,7 @@ const VARIABLE_MIN_MARKET = 1;
 const MINS = [0n, 3n, 8n] as const;
 
 type Command =
-  | { kind: "place"; market: number; wallet: number; side: Side; lots: number; price: number; ttl: number }
+  | { kind: "place"; market: number; wallet: number; side: Side; lots: number; price: number; ttl: number; ioc: boolean }
   | { kind: "cancel"; pick: number; byOwner: boolean }
   | { kind: "stale"; pick: number }
   | { kind: "tick"; secs: number }
@@ -46,6 +46,8 @@ const commandArb: fc.Arbitrary<Command> = fc.oneof(
       lots: fc.integer({ min: 1, max: 6 }),
       price: fc.integer({ min: 1, max: 6 }),
       ttl: fc.integer({ min: 30, max: 900 }),
+      // About one order in three is IOC (a market order is an IOC with a price cap).
+      ioc: fc.integer({ min: 0, max: 2 }).map((x) => x === 0),
     }),
   },
   { weight: 2, arbitrary: fc.record({ kind: fc.constant("cancel" as const), pick: fc.nat(), byOwner: fc.boolean() }) },
@@ -73,6 +75,10 @@ interface Run {
   crossedAfter: number[];
   /** Ids of the matches that failed and were reversed. */
   reversed: Set<string>;
+  /** IOC orders as `place` returned them: status, remainder and the reasons it was cancelled. */
+  iocPlaced: { id: string; status: string; remaining: bigint; cancelReasons: string[] }[];
+  /** Steps after which an IOC order was found in a book. */
+  iocRestingAfter: number[];
 }
 
 function run(commands: readonly Command[], seed: number): Run {
@@ -82,7 +88,8 @@ function run(commands: readonly Command[], seed: number): Run {
   );
   engine.upsertMarket(market({ chain: BOND.chain, asset: BOND.asset, assetClass: "fixed_income" }));
 
-  const out: Run = { events: [], matches: [], placed: [], engine, crossedAfter: [], reversed: new Set() };
+  const out: Run = { events: [], matches: [], placed: [], engine, crossedAfter: [], reversed: new Set(), iocPlaced: [], iocRestingAfter: [] };
+  const iocIds = new Set<string>();
   const mins: bigint[] = MARKETS.map((_, i) => (i === 2 ? FIXED_MIN : 0n));
   let now = NOW;
   let n = 0;
@@ -101,11 +108,21 @@ function run(commands: readonly Command[], seed: number): Run {
           limitPrice: BigInt(c.price),
           lotSize: LOT,
           expiresAt: now + c.ttl,
+          ...(c.ioc && { timeInForce: "IOC" as const }),
         };
         const r = engine.place(input, now);
         out.events.push(...r.events);
         if (r.accepted) {
           out.placed.push(input);
+          if (c.ioc) {
+            iocIds.add(input.id);
+            out.iocPlaced.push({
+              id: input.id,
+              status: r.order.status,
+              remaining: r.order.remaining,
+              cancelReasons: r.events.flatMap((e) => (e.type === "order_cancelled" && e.orderId === input.id ? [e.reason] : [])),
+            });
+          }
           for (const match of r.matches) out.matches.push({ match, at: now, min: mins[c.market] ?? 0n });
         }
         break;
@@ -150,6 +167,9 @@ function run(commands: readonly Command[], seed: number): Run {
       const bid = b.bids[0];
       const ask = b.asks[0];
       if (bid && ask && bid.price >= ask.price) out.crossedAfter.push(step);
+    }
+    if (iocIds.size > 0 && engine.exportState().books.some((b) => [...b.bids, ...b.asks].some((id) => iocIds.has(id)))) {
+      out.iocRestingAfter.push(step);
     }
   });
   return out;
@@ -329,6 +349,57 @@ describe("matching engine invariants (fast-check)", () => {
           // Net matched stays within the order's quantity.
           const net = o.filledQuantity - o.releasedQuantity - o.voidedQuantity;
           expect(net >= 0n && net <= input.quantity).toBe(true);
+        }
+      }),
+      PARAMS,
+    );
+  });
+
+  it("IOC: never rests in the book, after any command (placement, release by a failed match, restore of state)", () => {
+    fc.assert(
+      fc.property(commandsArb, fc.nat(), (commands, seed) => {
+        const r = run(commands, seed);
+        expect(r.iocRestingAfter).toEqual([]);
+        for (const { id } of r.iocPlaced) expect(["filled", "cancelled", "stale", "expired"]).toContain(orderOf(r, id).status);
+      }),
+      PARAMS,
+    );
+  });
+
+  it("IOC: never fills beyond its signed limit price", () => {
+    fc.assert(
+      fc.property(commandsArb, fc.nat(), (commands, seed) => {
+        const r = run(commands, seed);
+        const ioc = new Map(r.placed.filter((o) => o.timeInForce === "IOC").map((o) => [o.id, o]));
+        for (const { match } of r.matches) {
+          const buy = ioc.get(match.buyOrderId);
+          const sell = ioc.get(match.sellOrderId);
+          if (buy) expect(match.price).toBeLessThanOrEqual(buy.limitPrice);
+          if (sell) expect(match.price).toBeGreaterThanOrEqual(sell.limitPrice);
+        }
+      }),
+      PARAMS,
+    );
+  });
+
+  it("IOC: its unfilled remainder is always cancelled at placement, as ioc_unfilled unless self-trade or minimum rules cut it first", () => {
+    fc.assert(
+      fc.property(commandsArb, fc.nat(), (commands, seed) => {
+        const r = run(commands, seed);
+        for (const p of r.iocPlaced) {
+          if (p.remaining === 0n) {
+            expect(p.status).toBe("filled");
+            expect(p.cancelReasons).toEqual([]);
+          } else {
+            expect(p.status).toBe("cancelled");
+            expect(p.cancelReasons).toHaveLength(1);
+            expect(["ioc_unfilled", "self_trade_prevention", "below_min_notional"]).toContain(p.cancelReasons[0]);
+          }
+        }
+        // ioc_unfilled is the reason of IOC orders only.
+        const ioc = new Set(r.iocPlaced.map((p) => p.id));
+        for (const e of r.events) {
+          if ("type" in e && e.type === "order_cancelled" && e.reason === "ioc_unfilled") expect(ioc.has(e.orderId)).toBe(true);
         }
       }),
       PARAMS,

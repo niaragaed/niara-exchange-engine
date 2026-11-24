@@ -28,6 +28,10 @@ import type { Market, Match, OrderInput, Side } from "./types.ts";
  *   the minimum, the order whose remainder limits that match is cancelled: the resting
  *   order (then matching continues with the next one) or the incoming order (then
  *   matching stops). Skipping to a worse price is never done.
+ * - Time in force: a GTC order's unmatched remainder rests. An IOC order matches at once
+ *   up to its limit price and its unmatched remainder is cancelled (`ioc_unfilled`): it
+ *   never rests, and never re-enters the book later (a failed match releases its
+ *   quantity, which is then cancelled too).
  */
 
 export type RejectReason =
@@ -41,13 +45,14 @@ export type RejectReason =
   | "invalid_price"
   | "not_whole_lots"
   | "below_min_notional"
-  | "expired";
+  | "expired"
+  | "invalid_time_in_force";
 
 export type CancelRejectReason = "unknown_order" | "not_owner" | "not_live";
 
 export type OrderStatus = "open" | "partially_filled" | "filled" | "cancelled" | "expired" | "stale";
 
-export type CancelReason = "by_wallet" | "self_trade_prevention" | "below_min_notional";
+export type CancelReason = "by_wallet" | "self_trade_prevention" | "below_min_notional" | "ioc_unfilled";
 
 export interface OrderView extends OrderInput {
   /** Arrival position in the engine, from 1: the time in price-time priority. */
@@ -271,7 +276,7 @@ export class MatchingEngine {
       return { accepted: false, reason, events: [{ type: "order_rejected", orderId: input.id, reason }] };
     }
     const taker: OrderState = {
-      input: { ...input },
+      input: { ...input, timeInForce: input.timeInForce ?? "GTC" },
       seq: this.nextSeq++,
       filled: 0n,
       released: 0n,
@@ -349,6 +354,8 @@ export class MatchingEngine {
       if (remainingOf(taker) === 0n) {
         taker.status = "filled";
         events.push({ type: "order_filled", orderId: taker.input.id });
+      } else if (isIoc(taker)) {
+        this.cancelIocRemainder(taker, events);
       } else if (this.belowMin(taker, market)) {
         this.cancelBelowMin(taker, events);
       } else {
@@ -407,6 +414,9 @@ export class MatchingEngine {
       } else if ((fault === "expired" && o.input.expiresAt <= m.expiresAt) || !this.live(o, now)) {
         o.status = "expired";
         events.push({ type: "order_expired", orderId: o.input.id, remaining: remainingOf(o) });
+      } else if (isIoc(o)) {
+        // An IOC was immediate: its released quantity does not wait for a later match.
+        this.cancelIocRemainder(o, events);
       } else {
         o.status = netOf(o) > 0n ? "partially_filled" : "open";
         rebook.push(o);
@@ -506,6 +516,11 @@ export class MatchingEngine {
         (r.status === "partially_filled" && net > 0n && net < r.quantity) ||
         (r.status === "filled" && net === r.quantity);
       if (!consistent) throw fail("status does not match the net matched quantity");
+      const timeInForce = r.timeInForce ?? "GTC";
+      if (timeInForce !== "GTC" && timeInForce !== "IOC") throw fail("unknown time in force");
+      if (timeInForce === "IOC" && (r.status === "open" || r.status === "partially_filled")) {
+        throw fail("an IOC order never rests in the book");
+      }
       const order: OrderInput = {
         id: r.id,
         chain: r.chain,
@@ -517,6 +532,7 @@ export class MatchingEngine {
         limitPrice: r.limitPrice,
         lotSize: r.lotSize,
         expiresAt: r.expiresAt,
+        timeInForce,
       };
       restored.push({ input: order, seq: r.seq, filled: r.filledQuantity, released, voided, status: r.status });
     }
@@ -604,6 +620,7 @@ export class MatchingEngine {
     if (market.status !== "approved") return "market_not_approved";
     if (input.paymentAsset !== market.quoteAsset) return "wrong_payment_asset";
     if (input.lotSize !== market.lotSize) return "lot_size_mismatch";
+    if (input.timeInForce !== undefined && input.timeInForce !== "GTC" && input.timeInForce !== "IOC") return "invalid_time_in_force";
     if (input.quantity <= 0n) return "invalid_quantity";
     if (input.limitPrice <= 0n) return "invalid_price";
     if (input.quantity % market.lotSize !== 0n) return "not_whole_lots";
@@ -615,6 +632,12 @@ export class MatchingEngine {
   /** True when the order's remainder, valued at its own limit price, is below the minimum. */
   private belowMin(o: OrderState, market: Market): boolean {
     return notional(remainingOf(o), o.input.lotSize, o.input.limitPrice) < market.minOrderNotional;
+  }
+
+  /** Cancels an IOC order's unmatched remainder (it is never in the book). */
+  private cancelIocRemainder(o: OrderState, events: EngineEvent[]): void {
+    o.status = "cancelled";
+    events.push({ type: "order_cancelled", orderId: o.input.id, reason: "ioc_unfilled", remaining: remainingOf(o) });
   }
 
   /** Cancels an order's remainder (already out of the book) for being below the minimum. */
@@ -663,6 +686,10 @@ export class MatchingEngine {
     const i = list.indexOf(o);
     if (i >= 0) list.splice(i, 1);
   }
+}
+
+function isIoc(o: OrderState): boolean {
+  return o.input.timeInForce === "IOC";
 }
 
 function view(o: OrderState): OrderView {

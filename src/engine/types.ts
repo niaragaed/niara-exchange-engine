@@ -11,6 +11,12 @@ import type { ChainId } from "../chains.ts";
 
 export type Side = "buy" | "sell";
 
+/**
+ * GTC: the unmatched remainder rests in the book. IOC: matched at once up to the limit
+ * price; the unmatched remainder is cancelled (`ioc_unfilled`) and never rests.
+ */
+export type TimeInForce = "GTC" | "IOC";
+
 /** Spec §1 asset classes. Only `equity` trades on the order book. */
 export type AssetClass = "equity" | "fixed_income" | "credit" | "currency";
 
@@ -47,6 +53,8 @@ export interface OrderInput {
   lotSize: bigint;
   /** Unix seconds; required (spec §9.12 item 2). */
   expiresAt: number;
+  /** Signed (intent v2). Absent = GTC (v1 intents). */
+  timeInForce?: TimeInForce;
 }
 
 export interface Match {
