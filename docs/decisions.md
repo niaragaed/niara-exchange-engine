@@ -901,4 +901,53 @@ These go to `niara-exchange-solana`, which owns the spec.
     (created or waiting for a retry), `submitted` (handed to the chain),
     `confirmed` (tx hash), `failed` (error); matches `settling` while an
     attempt is in flight.
+12. **§3.6, order intent v3 (iceberg).** Add `displayQuantity` to the signed
+    fields of an iceberg: asset base units shown in the book at a time, a
+    whole number of lots, at least one lot, less than `quantity`; GTC only.
+    Solana text: header `Niara Exchange order intent v3` and, after the
+    `Time in force` line, `Display quantity: <n> (asset base units shown in
+    the book at a time)`; 699 bytes for a typical intent (v1 552, v2 626),
+    one more per extra digit of the display, so one v3 text still fits one
+    transaction with its Ed25519 instruction (two do not, as for v1). EIP-712:
+    same domain and primary type name, type
+    `OrderIntent(address wallet,uint8 side,address asset,uint256 quantity,uint256 lotSize,uint256 limitPrice,address paymentAsset,bytes16 nonce,uint64 expiresAt,uint8 timeInForce,uint256 displayQuantity)`.
+    A v3 intent is always an iceberg; v1 and v2 stay valid and are shown
+    whole; the cancellation keeps its version 1. The on-chain signed-intents
+    milestone must rebuild all three versions. No program or contract change.
+13. **§2, iceberg matching rules.** As a taker an iceberg matches its whole
+    remainder; resting, only its visible slice, min(display, remaining), is
+    in the book and can be matched. A fully filled slice is refreshed at the
+    same price with a new time priority (the next arrival sequence: behind
+    every order already resting), and one taker can fill several refreshed
+    slices in one pass while it is still marketable. A partly filled slice
+    keeps its priority, unless what is left of it falls below the minimum
+    order value while hidden quantity remains: then it is refreshed the same
+    way. The display quantity must meet the minimum order value at the limit
+    price (refused otherwise); the last slice is the remainder, under the
+    remainder rule of §9.12 item 1; an iceberg whose full slice falls below a
+    raised minimum is cancelled (`below_min_notional`) rather than shown
+    larger than its display. Self-trade prevention, lot units, the maker's
+    price and the minimum value of every match are unchanged. An innocent
+    iceberg re-entering after a failed match keeps its last priority and
+    shows a full slice.
+14. **§5, iceberg schema and the public view** (migration
+    `20261127120000_iceberg_orders`, answering §9.13 item 2's open question).
+    `orders.display_quantity` (signed, immutable; only with
+    `intent_version >= 3`, GTC, at least 1, below `quantity`, whole lots),
+    `orders.visible_quantity` (the current slice), `orders.priority_seq` (the
+    slice's priority after a refresh, from the same sequence as `seq`; only
+    moves later; unique) and the generated `orders.book_quantity` (the slice
+    of an iceberg, the remainder of any other order). The public
+    `order_book` view sums `book_quantity`: **visible slices only**, same
+    columns as before. `anon`/`authenticated` no longer read
+    `orders.quantity` or the fill counters (they would show the hidden
+    quantity), only the price-level columns and `book_quantity`. The service's
+    unsigned order reads show `null` quantity and remainder for an iceberg.
+15. **§3.5, iceberg approvals and their privacy limit.** An iceberg is covered
+    for its whole remainder (hidden part included), as any order; each fill
+    settles as today. The approval (SPL delegation, ERC-20 allowance) is
+    public, so an observer can read up to the total an iceberg may trade:
+    **an iceberg hides size from the book, not from the chain**. Fills are
+    public once settled.
+16. **§9.13 item 2.** Mark iceberg orders done, pointing to items 12 to 15.
 
