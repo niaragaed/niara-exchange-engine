@@ -3,7 +3,7 @@
 Decisions this repo makes on top of the spec
 (`niara-exchange-solana/EXCHANGE-MULTICHAIN-DESIGN.md`). The spec is the
 source of truth; where a decision here needs the spec to change, it is
-listed under "Spec edits needed" at the end. The first round of proposals is
+listed under "Spec edits needed" at the end. The first two rounds of proposals are
 now in the spec (see "Spec edits applied").
 
 > Testnet only: no real assets, no real money, no regulatory authorization.
@@ -709,6 +709,20 @@ The nine edits proposed in the first round are in the spec
 | §9.12 item 2: validity window, 17-byte `SettlementRecord`, closing only after on-chain intent verification | `b8949a8` |
 | §9.12 item 1: minimum checked at admission and at match time, remainder below it cancelled | `c6fbfff` |
 
+The second round (items 12 to 16 of "Spec edits needed", both groups that
+carried those numbers) is in the spec as of `niara-exchange-solana` `ed7d32c`:
+
+| Proposal | Spec commit |
+|---|---|
+| §3.4 / §2: EVM `matchId` is `bytes16` (the match UUID's 16 bytes); the replay key is `settledMatches[bytes16]` | `cb8ac71` |
+| §3.5: the delegate check's EVM form (`allowance(wallet, NiaraSettlement)` and balance on each leg's token; no vault) | `d44a1e6` |
+| Contracts: `Settled.matchId` indexed, deferred to the next contract version (contracts v2, pre-mainnet in §9.13) | `cb8ac71` |
+| §3.6: order intent v2 signs `timeInForce` (Solana text line, EIP-712 `uint8 timeInForce`); v1 stays valid as GTC | `c9a822e` |
+| §3.6: the cancellation keeps its own version (1) | `c9a822e` |
+| §2 / §5: market order = IOC with a client-set price cap; an IOC never rests and is not re-entered after a failed match | `867b9d2` |
+| §5: `orders.time_in_force`, `ioc_unfilled`, and the cancellation audit trail as built (migrations `20261120130000`, `20261124120000`) | `04863d5` |
+| §3.5: an IOC buy is covered by `quantity / lot_size x limit_price`; its unused allowance is not reused | `d44a1e6` |
+
 ## Spec edits needed
 
 These go to `niara-exchange-solana`, which owns the spec.
@@ -769,41 +783,3 @@ These go to `niara-exchange-solana`, which owns the spec.
     `confirmed` (tx hash), `failed` (error); matches `settling` while an
     attempt is in flight.
 
-12. **§3.4 / §2, EVM `matchId` width.** `NiaraSettlement.settle` takes
-    `bytes16 matchId` (the match UUID's 16 bytes, as on Solana), not
-    `bytes32`; record that the EVM replay key is `settledMatches[bytes16]`.
-13. **§3.5, EVM.** The delegate check's EVM form: `allowance(wallet,
-    NiaraSettlement)` and balance on each leg's token (asset for the seller,
-    USDT for the buyer); NiaraSettlement is the spender, there is no vault.
-14. **Contract (next version), `Settled.matchId` indexed.** It is not
-    indexed today, so finding the transaction of a settled match means
-    scanning `Settled` logs by asset, payment token and buyer. Indexing
-    `matchId` would make it one exact `eth_getLogs` query. A change to
-    niara-contracts, not to this repo. **Deferred** (founder, 2026-11-22) to
-    the next contract version: the EVM contracts are not upgradeable, and the
-    worker already records the settle transaction's hash, so the log scan
-    only runs to recover a transaction the database does not have.
-12. **§3.6, order intent v2.** Add `timeInForce` (`GTC` | `IOC`) to the signed
-    fields: Solana text header `Niara Exchange order intent v2` and the line
-    `Time in force: ...` after the limit price; EIP-712 type
-    `OrderIntent(...,uint64 expiresAt,uint8 timeInForce)` (0 = GTC, 1 = IOC),
-    same domain. v1 stays valid and means GTC. The on-chain signed-intents
-    milestone must rebuild both versions.
-13. **§3.6, cancellation version.** The cancellation keeps its own version
-    (1), independent of the order intent's: it names the order by nonce for
-    either version.
-14. **§2 / §5, order types.** Market orders are IOC orders with a price cap the
-    client sets from the best opposite price (default slippage 1%, at most 5%,
-    client-side); the engine enforces only the signed limit. An IOC never rests
-    and is never re-entered after a failed match (its released quantity is
-    cancelled). No program or contract change.
-15. **§5, schema.** `orders.time_in_force` (`gtc`/`ioc`, default `gtc`,
-    immutable) and the cancel reason `ioc_unfilled`, with the checks of
-    migration `20261124120000_time_in_force`. Also correct the "Cancellation
-    audit trail (proposed, not yet in a migration)" paragraph: it is in
-    migration `20261120130000_cancel_reasons`, with `expired`, `stale` and now
-    `ioc_unfilled` among the reasons.
-16. **§3.5, IOC approvals.** An IOC buy is covered by `quantity / lot_size x
-    limit_price` (the cap); its unused allowance is not reused, because each
-    order approves exactly its own amount and an approval replaces the
-    previous one.
