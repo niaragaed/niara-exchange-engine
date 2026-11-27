@@ -62,6 +62,9 @@ function row(overrides: Partial<OrderRow> & Pick<OrderRow, "seq" | "wallet" | "s
     cancelReason: overrides.cancelReason ?? defaultReason(overrides.status ?? "open"),
     cancelSignature: overrides.cancelSignature ?? null,
     timeInForce: overrides.timeInForce ?? "GTC",
+    displayQuantity: overrides.displayQuantity ?? null,
+    visibleQuantity: overrides.visibleQuantity ?? null,
+    prioritySeq: overrides.prioritySeq ?? null,
   };
 }
 

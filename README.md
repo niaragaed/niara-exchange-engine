@@ -64,8 +64,8 @@ The order service refuses to start while a migration it writes through is missin
 | `GET /v1/books/:chain/:asset` | | Public book: price levels only |
 | `GET /health` | | Liveness, with the testnet notice |
 
-**Order types.** Intents are v2 (v1 is still accepted, as GTC) and sign a
-`timeInForce`:
+**Order types.** Plain orders sign intent v2 (v1 is still accepted, as GTC),
+which carries a `timeInForce`; icebergs sign v3 (below):
 
 - `GTC`: a limit order; what does not match at once rests in the book.
 - `IOC`: matches at once against the book up to the signed limit price; the
@@ -75,6 +75,15 @@ The order service refuses to start while a migration it writes through is missin
   **1% by default, 5% at most** (`marketOrderLimitPrice` in
   `src/intents/market-order.ts`). The engine only enforces the signed limit.
   A market buy approves quantity x cap.
+- **Iceberg** = a GTC order signed as intent **v3**, which adds
+  `displayQuantity` (asset base units, whole lots, at least one lot, less than
+  `quantity`, and worth at least the chain's minimum order value at the limit
+  price). Only a slice of min(display, remaining) rests in the book; a used-up
+  slice is shown again at the same price, behind the orders already resting.
+  The public book and the unsigned reads (`GET /v1/orders...`) never show the
+  hidden quantity: an iceberg's `quantity` and `remaining` are `null` there,
+  with `displayQuantity` and `visibleQuantity` instead. The on-chain approval
+  still covers, and shows, the whole remainder (see `docs/decisions.md`).
 
 Lists page with `limit` and `before` (the `next` cursor of the previous page).
 Browsers may call the API only from the exact origins in `CORS_ORIGINS`.

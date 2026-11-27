@@ -103,6 +103,10 @@ export async function persistPlacement(
     // A new order can leave the book at once (self-trade prevention, below the minimum, IOC).
     cancelReason: closingOf(placed.events, o.id)?.reason ?? null,
     timeInForce: o.timeInForce ?? "GTC",
+    displayQuantity: o.displayQuantity ?? null,
+    visibleQuantity: o.visibleQuantity ?? null,
+    // A new order's priority is its seq: a refresh only happens to a resting slice.
+    prioritySeq: null,
   });
   for (const m of placed.matches) await insertMatch(tx, m, dbAssetOf(catalog, m));
   // The new order is already written in its final state.

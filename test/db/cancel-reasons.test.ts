@@ -73,7 +73,7 @@ describe("applying the migration", () => {
       onFatal: () => undefined,
     }).catch((e: unknown) => e);
     expect(err).toBeInstanceOf(SchemaNotReadyError);
-    expect((err as SchemaNotReadyError).missing).toEqual(["20261120130000_cancel_reasons", "20261122120000_listing_metadata", "20261124120000_time_in_force"]);
+    expect((err as SchemaNotReadyError).missing).toEqual(["20261120130000_cancel_reasons", "20261122120000_listing_metadata", "20261124120000_time_in_force", "20261127120000_iceberg_orders"]);
   });
 
   it("refuses to run while a cancelled order has no recorded reason, then backfills expired and stale", async () => {

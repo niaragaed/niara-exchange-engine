@@ -118,6 +118,11 @@ function cancelReasonOf(events: readonly EngineEvent[], orderId: string): Cancel
   return undefined;
 }
 
+/**
+ * An order for its own wallet: only in the answers to the wallet's signed requests (the
+ * placement and the cancellation), so an iceberg's total and remaining are shown, with
+ * its display quantity and current visible slice.
+ */
 export function orderJson(o: OrderView, cancelReason?: CancelReason): Json {
   return {
     id: o.id,
@@ -132,6 +137,8 @@ export function orderJson(o: OrderView, cancelReason?: CancelReason): Json {
     paymentAsset: o.paymentAsset,
     expiresAt: o.expiresAt,
     timeInForce: o.timeInForce ?? "GTC",
+    displayQuantity: o.displayQuantity?.toString() ?? null,
+    visibleQuantity: o.visibleQuantity?.toString() ?? null,
     filledQuantity: o.filledQuantity.toString(),
     remaining: o.remaining.toString(),
     status: o.status,
@@ -165,12 +172,25 @@ function storedRemaining(o: StoredOrder): bigint {
   return o.quantity - (o.filledQuantity - (o.releasedQuantity ?? 0n) - (o.voidedQuantity ?? 0n));
 }
 
+/** An iceberg's visible slice as the book shows it: its slice while it rests, else 0. */
+function visibleOfStored(o: StoredOrder): bigint {
+  return o.status === "open" || o.status === "partially_filled" ? (o.visibleQuantity ?? 0n) : 0n;
+}
+
 /**
- * A stored order (any status) for its wallet: the fields of `orderJson`, plus the nonce
- * (what a signed cancellation names), the failed-match counters, why it left the book,
- * and when it was placed. Never the intent or cancellation signature.
+ * A stored order (any status), as the unsigned read endpoints show it: the fields of
+ * `orderJson`, plus the nonce (what a signed cancellation names), the failed-match
+ * counters, why it left the book, and when it was placed. Never the intent or
+ * cancellation signature.
+ *
+ * Iceberg privacy: these endpoints are public (anyone can ask for any wallet's orders,
+ * and order ids reach the counterparty through matches), so an iceberg's `quantity` and
+ * `remaining` are null: they would show the hidden quantity. Its display quantity, its
+ * current visible slice and its fills (public on-chain once settled) are shown. Its
+ * wallet knows the total from the intent it signed.
  */
 export function storedOrderJson(o: StoredOrder): Json {
+  const iceberg = o.displayQuantity != null;
   return {
     id: o.id,
     seq: o.seq,
@@ -178,18 +198,20 @@ export function storedOrderJson(o: StoredOrder): Json {
     asset: canonicalAddress(o.chain, o.asset) ?? o.asset,
     wallet: o.wallet,
     side: o.side,
-    quantity: o.quantity.toString(),
+    quantity: iceberg ? null : o.quantity.toString(),
     lotSize: o.lotSize.toString(),
     limitPrice: o.limitPrice.toString(),
     paymentAsset: canonicalAddress(o.chain, o.paymentAsset) ?? o.paymentAsset,
     nonce: o.nonce,
     expiresAt: o.expiresAt,
     timeInForce: o.timeInForce ?? "GTC",
+    displayQuantity: o.displayQuantity?.toString() ?? null,
+    visibleQuantity: iceberg ? visibleOfStored(o).toString() : null,
     filledQuantity: o.filledQuantity.toString(),
     settledQuantity: (o.settledQuantity ?? 0n).toString(),
     releasedQuantity: (o.releasedQuantity ?? 0n).toString(),
     voidedQuantity: (o.voidedQuantity ?? 0n).toString(),
-    remaining: storedRemaining(o).toString(),
+    remaining: iceberg ? null : storedRemaining(o).toString(),
     status: o.status,
     cancelReason: o.cancelReason ?? null,
     createdAt: o.createdAt,
@@ -360,7 +382,9 @@ export class OrderService {
       const results = await checker.check(candidates.map(orderNeed));
       candidates.forEach((c, i) => {
         checked.add(c.id);
-        if (results[i] === null) covered += c.remaining;
+        // An iceberg is counted for its visible slice only: its refreshed slices go behind
+        // the orders resting after it, which this order may reach first.
+        if (results[i] === null) covered += c.visibleQuantity ?? c.remaining;
         else {
           stale.push(c.id);
           this.deps.log?.("order_not_covered", { orderId: c.id, reason: results[i] });

@@ -4,12 +4,19 @@ import type { Side, TimeInForce } from "../engine/types.ts";
 export type { TimeInForce } from "../engine/types.ts";
 
 /**
- * The current order intent version. v2 adds `timeInForce` to the signed fields; v1 is
- * still accepted and means GTC. The cancellation format has its own version
- * (`CANCEL_VERSION`, cancel.ts): it names an order by nonce, whatever the order's version.
+ * The order intent version of a plain order (shown whole in the book). v2 adds
+ * `timeInForce` to the signed fields; v1 is still accepted and means GTC.
+ *
+ * v3 is the iceberg version (`ICEBERG_INTENT_VERSION`): v2's fields plus
+ * `displayQuantity`, always present and below `quantity`. A v1 or v2 order is shown
+ * whole (display = its full quantity).
+ *
+ * The cancellation format has its own version (`CANCEL_VERSION`, cancel.ts): it names an
+ * order by nonce, whatever the order's version.
  */
 export const INTENT_VERSION = 2;
-export const SUPPORTED_INTENT_VERSIONS = [1, 2] as const;
+export const ICEBERG_INTENT_VERSION = 3;
+export const SUPPORTED_INTENT_VERSIONS = [1, 2, 3] as const;
 export type IntentVersion = (typeof SUPPORTED_INTENT_VERSIONS)[number];
 
 /**
@@ -53,13 +60,24 @@ export interface OrderIntent {
    * (spec §9.12 item 2).
    */
   expiresAt: number;
-  /** v2: required and signed. v1: absent (a v1 intent is GTC). */
+  /** v2 and v3: required and signed (v3: GTC only). v1: absent (a v1 intent is GTC). */
   timeInForce?: TimeInForce;
+  /**
+   * v3 (iceberg): required and signed. Asset base units shown in the book at a time,
+   * a whole number of lots, at least one lot and less than `quantity`. The operator may
+   * never show more than this. v1 and v2: absent (shown whole).
+   */
+  displayQuantity?: bigint;
 }
 
 /** The time in force an intent was signed with: a v1 intent is GTC. */
 export function timeInForceOf(intent: Pick<OrderIntent, "version" | "timeInForce">): TimeInForce {
   return intent.version === 1 ? "GTC" : intent.timeInForce!;
+}
+
+/** The signed display quantity of an iceberg (v3); undefined for an order shown whole. */
+export function displayQuantityOf(intent: Pick<OrderIntent, "version" | "displayQuantity">): bigint | undefined {
+  return intent.version === ICEBERG_INTENT_VERSION ? intent.displayQuantity : undefined;
 }
 
 export class IntentError extends Error {
@@ -83,4 +101,6 @@ export type IntentErrorCode =
   | "invalid_nonce"
   | "invalid_expiry"
   | "invalid_time_in_force"
+  | "invalid_display_quantity"
+  | "iceberg_requires_gtc"
   | "invalid_signature_format";

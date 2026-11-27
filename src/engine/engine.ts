@@ -32,6 +32,17 @@ import type { Market, Match, OrderInput, Side } from "./types.ts";
  *   up to its limit price and its unmatched remainder is cancelled (`ioc_unfilled`): it
  *   never rests, and never re-enters the book later (a failed match releases its
  *   quantity, which is then cancelled too).
+ * - Iceberg (`displayQuantity`, GTC only): as a taker it matches its whole remainder;
+ *   resting, only its visible slice, min(display, remaining), is in the book and can be
+ *   matched. When a slice is fully filled, a new slice of min(display, remaining) is
+ *   shown at the same price with a new time priority (the next arrival sequence, so
+ *   behind every order already resting). One taker can fill several slices in one pass
+ *   while it is still marketable. A slice is never left below the minimum notional
+ *   while hidden quantity remains: a partly filled slice worth less than the minimum is
+ *   refreshed the same way. The display quantity must itself meet the minimum at entry;
+ *   the last slice is the remainder, which follows the remainder rule.
+ * - Priority is the order's `priority`: its seq at arrival, a later sequence after each
+ *   slice refresh. The public book shows visible slices only.
  */
 
 export type RejectReason =
@@ -46,7 +57,10 @@ export type RejectReason =
   | "not_whole_lots"
   | "below_min_notional"
   | "expired"
-  | "invalid_time_in_force";
+  | "invalid_time_in_force"
+  | "invalid_display_quantity"
+  | "iceberg_requires_gtc"
+  | "display_below_min_notional";
 
 export type CancelRejectReason = "unknown_order" | "not_owner" | "not_live";
 
@@ -66,6 +80,13 @@ export interface OrderView extends OrderInput {
   /** quantity - (filled - released - voided). */
   remaining: bigint;
   status: OrderStatus;
+  /** Time priority: `seq` at arrival; a later sequence after each iceberg slice refresh. */
+  prioritySeq: number;
+  /**
+   * Icebergs only: the current visible slice (what the book shows and a taker can match
+   * while it rests). Absent for an order shown whole.
+   */
+  visibleQuantity?: bigint;
 }
 
 /**
@@ -89,6 +110,8 @@ export type EngineEvent =
   | { type: "match"; match: Match }
   | { type: "order_filled"; orderId: string }
   | { type: "order_rested"; orderId: string; remaining: bigint }
+  /** An iceberg showed a new slice with a new time priority (back of its price level). */
+  | { type: "order_refreshed"; orderId: string; visible: bigint; prioritySeq: number }
   | { type: "order_cancelled"; orderId: string; reason: CancelReason; remaining: bigint }
   | { type: "order_expired"; orderId: string; remaining: bigint }
   | { type: "order_stale"; orderId: string; remaining: bigint }
@@ -128,12 +151,19 @@ export interface RestoredOrder extends OrderInput {
   releasedQuantity?: bigint;
   voidedQuantity?: bigint;
   status: "open" | "partially_filled" | "stale" | "filled";
+  /** Its time priority (`orders.priority_seq`); absent = its seq (never refreshed). */
+  prioritySeq?: number;
+  /** Icebergs: the visible slice (`orders.visible_quantity`). */
+  visibleQuantity?: bigint;
 }
 
 export interface RestoreInput {
   /** Every non-terminal order, in increasing `seq`. */
   orders: readonly RestoredOrder[];
-  /** Highest `seq` ever given to an order (0 if none): the next order gets the one after. */
+  /**
+   * Highest sequence ever given to an order or to an iceberg slice (0 if none): the
+   * next order gets the one after.
+   */
   lastOrderSeq: number;
   /** Highest match `sequence` ever made (0 if none). */
   lastMatchSeq: number;
@@ -168,6 +198,10 @@ export class EngineInvariantError extends Error {
 interface OrderState {
   input: OrderInput;
   seq: number;
+  /** Time priority: seq at arrival, the next sequence after each slice refresh. */
+  priority: number;
+  /** Icebergs: the visible slice while it rests (0 otherwise). Unused for other orders. */
+  visible: bigint;
   filled: bigint;
   released: bigint;
   voided: bigint;
@@ -175,9 +209,9 @@ interface OrderState {
 }
 
 interface Book {
-  /** Sorted by price desc, then seq asc. */
+  /** Sorted by price desc, then priority asc. */
   bids: OrderState[];
-  /** Sorted by price asc, then seq asc. */
+  /** Sorted by price asc, then priority asc. */
   asks: OrderState[];
 }
 
@@ -196,12 +230,26 @@ function remainingOf(o: OrderState): bigint {
   return o.input.quantity - netOf(o);
 }
 
+function isIceberg(o: OrderState): boolean {
+  return o.input.displayQuantity !== undefined;
+}
+
+/** What a resting order shows in the book, and what a taker can match of it now. */
+function shownOf(o: OrderState): bigint {
+  return isIceberg(o) ? o.visible : remainingOf(o);
+}
+
+/** The slice an iceberg shows when it rests or refreshes: min(display, remaining). */
+function fullSliceOf(o: OrderState): bigint {
+  return minBig(o.input.displayQuantity!, remainingOf(o));
+}
+
 /** True when `a` has priority over `b` on the same side of the book. */
 function before(side: Side, a: OrderState, b: OrderState): boolean {
   if (a.input.limitPrice !== b.input.limitPrice) {
     return side === "buy" ? a.input.limitPrice > b.input.limitPrice : a.input.limitPrice < b.input.limitPrice;
   }
-  return a.seq < b.seq;
+  return a.priority < b.priority;
 }
 
 function insertSorted(side: Side, list: OrderState[], o: OrderState): void {
@@ -223,11 +271,12 @@ function levels(list: readonly OrderState[]): PriceLevel[] {
   const out: PriceLevel[] = [];
   for (const o of list) {
     const last = out[out.length - 1];
+    // Visible slices only: an iceberg's hidden quantity is never in a price level.
     if (last && last.price === o.input.limitPrice) {
-      last.quantity += remainingOf(o);
+      last.quantity += shownOf(o);
       last.orders += 1;
     } else {
-      out.push({ price: o.input.limitPrice, quantity: remainingOf(o), orders: 1 });
+      out.push({ price: o.input.limitPrice, quantity: shownOf(o), orders: 1 });
     }
   }
   return out;
@@ -275,9 +324,12 @@ export class MatchingEngine {
     if (reason) {
       return { accepted: false, reason, events: [{ type: "order_rejected", orderId: input.id, reason }] };
     }
+    const seq = this.nextSeq++;
     const taker: OrderState = {
       input: { ...input, timeInForce: input.timeInForce ?? "GTC" },
-      seq: this.nextSeq++,
+      seq,
+      priority: seq,
+      visible: 0n,
       filled: 0n,
       released: 0n,
       voided: 0n,
@@ -321,12 +373,17 @@ export class MatchingEngine {
         });
         break;
       }
-      const quantity = minBig(remainingOf(taker), remainingOf(maker));
+      // A resting iceberg is matched up to its visible slice only.
+      const shown = shownOf(maker);
+      const quantity = minBig(remainingOf(taker), shown);
       if (notional(quantity, maker.input.lotSize, maker.input.limitPrice) < market.minOrderNotional) {
-        // The order whose remainder limits this match is below the minimum.
-        if (remainingOf(maker) === quantity) {
+        // The order whose remainder (or visible slice) limits this match is below the minimum.
+        if (shown === quantity) {
           opposite.shift();
-          this.cancelBelowMin(maker, events);
+          // An iceberg with hidden quantity shows a full slice instead, if that meets the
+          // minimum (a minimum raised since it rested); otherwise it is cancelled.
+          if (isIceberg(maker) && shown < remainingOf(maker)) this.refreshSlice(maker, opposite, market, events);
+          else this.cancelBelowMin(maker, events);
           continue;
         }
         this.cancelBelowMin(taker, events);
@@ -337,6 +394,7 @@ export class MatchingEngine {
       events.push({ type: "match", match });
       maker.filled += quantity;
       taker.filled += quantity;
+      if (isIceberg(maker)) maker.visible -= quantity;
       if (remainingOf(maker) === 0n) {
         opposite.shift();
         maker.status = "filled";
@@ -346,6 +404,11 @@ export class MatchingEngine {
         if (this.belowMin(maker, market)) {
           opposite.shift();
           this.cancelBelowMin(maker, events);
+        } else if (isIceberg(maker) && (maker.visible === 0n || this.belowMinQuantity(maker, maker.visible, market))) {
+          // The slice is used up (or left below the minimum): a new slice, back of the queue.
+          // If the taker is still marketable, the loop may reach it again in this pass.
+          opposite.shift();
+          this.refreshSlice(maker, opposite, market, events);
         }
       }
     }
@@ -358,8 +421,14 @@ export class MatchingEngine {
         this.cancelIocRemainder(taker, events);
       } else if (this.belowMin(taker, market)) {
         this.cancelBelowMin(taker, events);
+      } else if (isIceberg(taker) && this.belowMinQuantity(taker, fullSliceOf(taker), market)) {
+        // Only after a raised minimum: the signed display quantity met it at entry.
+        this.cancelBelowMin(taker, events);
       } else {
         taker.status = netOf(taker) > 0n ? "partially_filled" : "open";
+        // An iceberg rests its first slice (or, re-entering after a release, a full slice
+        // at the priority it had).
+        if (isIceberg(taker)) taker.visible = fullSliceOf(taker);
         insertSorted(taker.input.side, taker.input.side === "buy" ? book.bids : book.asks, taker);
         events.push({ type: "order_rested", orderId: taker.input.id, remaining: remainingOf(taker) });
       }
@@ -422,8 +491,9 @@ export class MatchingEngine {
         rebook.push(o);
       }
     }
-    // Re-enter in priority order (seq): the earlier order first.
-    for (const o of rebook.sort((a, b) => a.seq - b.seq)) this.matchAndRest(o, now, events, matches);
+    // Re-enter in priority order: the earlier order first. An iceberg keeps the priority
+    // of its last slice and shows a full slice again.
+    for (const o of rebook.sort((a, b) => a.priority - b.priority)) this.matchAndRest(o, now, events, matches);
     return { reversals, events, matches };
   }
 
@@ -492,6 +562,7 @@ export class MatchingEngine {
     }
     let previousSeq = 0;
     const restored: OrderState[] = [];
+    const priorities = new Set<number>();
     for (const r of input.orders) {
       const fail = (why: string) => new EngineInvariantError(`cannot restore order ${r.id}: ${why}`);
       if (this.orders.has(r.id) || restored.some((o) => o.input.id === r.id)) throw fail("duplicate id");
@@ -521,6 +592,30 @@ export class MatchingEngine {
       if (timeInForce === "IOC" && (r.status === "open" || r.status === "partially_filled")) {
         throw fail("an IOC order never rests in the book");
       }
+      const priority = r.prioritySeq ?? r.seq;
+      if (!Number.isSafeInteger(priority) || priority < r.seq || priority > input.lastOrderSeq) {
+        throw fail("priority out of range (from its seq to the last order seq)");
+      }
+      let visible = 0n;
+      const display = r.displayQuantity;
+      if (display === undefined) {
+        if (r.prioritySeq !== undefined && r.prioritySeq !== r.seq) throw fail("only an iceberg gets a new priority");
+        if (r.visibleQuantity !== undefined) throw fail("only an iceberg has a visible slice");
+      } else {
+        if (timeInForce !== "GTC") throw fail("an iceberg is GTC only");
+        if (display <= 0n || display % r.lotSize !== 0n || display >= r.quantity) throw fail("invalid display quantity");
+        visible = r.visibleQuantity ?? -1n;
+        const remaining = r.quantity - net;
+        if (visible < 0n || visible > display) throw fail("visible slice out of range");
+        if ((r.status === "open" || r.status === "partially_filled") && (visible === 0n || visible > remaining)) {
+          throw fail("a resting iceberg shows a slice of its remainder");
+        }
+      }
+      // Priorities come from the arrival sequence: two orders never share one.
+      for (const p of new Set([r.seq, priority])) {
+        if (priorities.has(p)) throw fail("sequence or priority used twice");
+        priorities.add(p);
+      }
       const order: OrderInput = {
         id: r.id,
         chain: r.chain,
@@ -533,8 +628,9 @@ export class MatchingEngine {
         lotSize: r.lotSize,
         expiresAt: r.expiresAt,
         timeInForce,
+        ...(display !== undefined && { displayQuantity: display }),
       };
-      restored.push({ input: order, seq: r.seq, filled: r.filledQuantity, released, voided, status: r.status });
+      restored.push({ input: order, seq: r.seq, priority, visible, filled: r.filledQuantity, released, voided, status: r.status });
     }
     for (const o of restored) {
       this.orders.set(o.input.id, o);
@@ -576,7 +672,8 @@ export class MatchingEngine {
   /**
    * The resting orders an incoming order could trade with, best first: live (outside the
    * settlement margin), on the opposite side, crossing its limit price, and not in
-   * `skip`. Read-only: lets the caller check them (e.g. on-chain delegations) before
+   * `skip`. An iceberg can trade its whole remainder through refreshed slices, but only
+   * its visible slice before the orders behind it. Read-only: lets the caller check them (e.g. on-chain delegations) before
    * `place`.
    */
   crossingOrders(
@@ -625,13 +722,45 @@ export class MatchingEngine {
     if (input.limitPrice <= 0n) return "invalid_price";
     if (input.quantity % market.lotSize !== 0n) return "not_whole_lots";
     if (notional(input.quantity, market.lotSize, input.limitPrice) < market.minOrderNotional) return "below_min_notional";
+    const display = input.displayQuantity;
+    if (display !== undefined) {
+      if (input.timeInForce === "IOC") return "iceberg_requires_gtc";
+      if (typeof display !== "bigint" || display <= 0n || display % market.lotSize !== 0n || display >= input.quantity) {
+        return "invalid_display_quantity";
+      }
+      // Each full slice must meet the minimum; the last slice is the remainder (remainder rule).
+      if (notional(display, market.lotSize, input.limitPrice) < market.minOrderNotional) return "display_below_min_notional";
+    }
     if (!Number.isSafeInteger(input.expiresAt) || input.expiresAt - now <= this.margin) return "expired";
     return null;
   }
 
   /** True when the order's remainder, valued at its own limit price, is below the minimum. */
   private belowMin(o: OrderState, market: Market): boolean {
-    return notional(remainingOf(o), o.input.lotSize, o.input.limitPrice) < market.minOrderNotional;
+    return this.belowMinQuantity(o, remainingOf(o), market);
+  }
+
+  /** True when `quantity` of the order, valued at its own limit price, is below the minimum. */
+  private belowMinQuantity(o: OrderState, quantity: bigint, market: Market): boolean {
+    return notional(quantity, o.input.lotSize, o.input.limitPrice) < market.minOrderNotional;
+  }
+
+  /**
+   * An iceberg (already out of `list`, with hidden quantity) shows a new slice of
+   * min(display, remaining) at the same price, with the next sequence as its priority:
+   * behind every order already resting. If that slice is below the minimum (only after
+   * the minimum was raised), the order is cancelled instead.
+   */
+  private refreshSlice(o: OrderState, list: OrderState[], market: Market, events: EngineEvent[]): void {
+    const slice = fullSliceOf(o);
+    if (this.belowMinQuantity(o, slice, market)) {
+      this.cancelBelowMin(o, events);
+      return;
+    }
+    o.visible = slice;
+    o.priority = this.nextSeq++;
+    insertSorted(o.input.side, list, o);
+    events.push({ type: "order_refreshed", orderId: o.input.id, visible: slice, prioritySeq: o.priority });
   }
 
   /** Cancels an IOC order's unmatched remainder (it is never in the book). */
@@ -701,6 +830,8 @@ function view(o: OrderState): OrderView {
     voidedQuantity: o.voided,
     remaining: remainingOf(o),
     status: o.status,
+    prioritySeq: o.priority,
+    ...(isIceberg(o) && { visibleQuantity: o.visible }),
   };
 }
 

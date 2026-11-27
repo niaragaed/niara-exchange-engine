@@ -41,9 +41,12 @@ side, asset, quantity, lot size, limit price, payment asset (USDT), nonce
 (16 random bytes), **expiry** (unix seconds, required) and, from v2, the
 **time in force** (`GTC` or `IOC`, below).
 
-- **Versions.** v2 is current. v1 is still accepted and means `GTC`; a v1
-  intent that carries `timeInForce` is refused (v1 never signed it, so an
+- **Versions.** Plain orders sign v2. v1 is still accepted and means `GTC`; a
+  v1 intent that carries `timeInForce` is refused (v1 never signed it, so an
   unsigned field may not change what the wallet agreed to). v2 requires it.
+  Icebergs sign **v3** (v2 plus `displayQuantity`, "Iceberg orders" below); a
+  v1 or v2 intent that carries `displayQuantity` is refused, and is shown
+  whole.
 
 - **Solana**: a fixed, labeled UTF-8 text with the testnet notice, signed with
   `signMessage` (552 bytes for a typical intent). The verifier rebuilds the
@@ -173,6 +176,10 @@ change with v2.
 - **Time in force**: a `GTC` order's remainder rests; an `IOC` order matches
   at once up to its limit and its remainder is cancelled (`ioc_unfilled`).
   Details in "Time in force and market orders" below.
+- **Iceberg** (`displayQuantity`, GTC only): only a visible slice rests; a
+  used-up slice is refreshed at the same price with a new time priority.
+  Price-time priority uses each order's priority (its `seq`, or the sequence
+  of its latest slice). Details in "Iceberg orders" below.
 - **Restart**: `restore` rebuilds the books from the non-terminal orders in
   their original `seq`, with their fills, on a fresh engine; `exportState`
   returns everything that decides future behavior (markets, each book's
@@ -668,6 +675,115 @@ Production testnet API at `https://api.niaraglobal.com`. Testnet only.
   lands first exits without ever answering `/health` and the previous one
   keeps serving; the previous build keeps working on the migrated schema.
 
+## Iceberg orders (intent v3, migration `20261127120000`)
+
+An iceberg shows only part of its quantity in the book at a time (spec §9.13,
+decided for v1). The visible slice is the wallet's decision, so it is signed:
+the operator can never show more than the wallet allowed.
+
+- **Intent v3** = v2 + `displayQuantity`, in **asset base units, a whole
+  number of lots** (the unit of `quantity`, so the two compare directly).
+  Rules, checked at admission (`src/intents/validate.ts`): GTC only (an IOC
+  never rests, so it has nothing to hide: `iceberg_requires_gtc`); at least
+  one lot, a multiple of the lot size, and less than `quantity`
+  (`invalid_display_quantity`; an order shown whole is a v2 order). A v3
+  intent is always an iceberg. The engine adds the market check: the display
+  quantity at the limit price must meet the chain's minimum order value
+  (`display_below_min_notional`). `INTENT_VERSION` stays 2 (plain orders);
+  `ICEBERG_INTENT_VERSION` is 3.
+- **Solana text**: first line `Niara Exchange order intent v3`, and one line
+  after `Time in force`: `Display quantity: <n> (asset base units shown in the
+  book at a time)`. The rest is v2's text. 699 bytes for a typical intent
+  (43-character addresses, a 7-digit display; v1 552, v2 626), and one more
+  byte per extra digit of the display.
+- **EIP-712**: same domain, same primary type name, a third type hash:
+  `OrderIntent(address wallet,uint8 side,address asset,uint256 quantity,uint256 lotSize,uint256 limitPrice,address paymentAsset,bytes16 nonce,uint64 expiresAt,uint8 timeInForce,uint256 displayQuantity)`
+  (`timeInForce` is always 0 = GTC in v3). No contract or program change: as
+  for v2, nothing verifies intents on-chain yet; the signed-intents milestone
+  must rebuild all three versions.
+- **The cancellation keeps its own version (1)**: it names the order by nonce,
+  which an iceberg has like any order.
+
+**Matching** (`src/engine/engine.ts`):
+
+- As a **taker**, an iceberg matches its whole remainder (hidden part
+  included), like any order. Only what rests is sliced.
+- **Resting**, only the visible slice, min(display, remaining), is in the book
+  and can be matched. A taker takes at most that slice from it, then moves on.
+- **Refresh.** When a slice is fully filled and quantity remains, a new slice of
+  min(display, remaining) is shown at the same price with a **new time
+  priority**: the next value of the engine's arrival sequence, so it sorts
+  behind every order already resting at that price. The same taker can fill
+  several refreshed slices in one pass while it is still marketable, taking
+  the orders in between in price-time order.
+- **A partly filled slice keeps its priority.** If what is left of it is worth
+  less than the minimum order value while hidden quantity remains, it is
+  refreshed the same way (new slice, new priority) instead of resting below
+  the minimum. The last slice is the remainder, under the remainder rule: a
+  remainder below the minimum is cancelled (`below_min_notional`), as for any
+  order. An iceberg whose full slice is below a minimum raised since it rested
+  is cancelled (`below_min_notional`) when matching reaches it, rather than
+  shown larger than its display.
+- Unchanged: self-trade prevention (cancel newest), whole lots, the maker's
+  price as the trade price, the minimum value of every match.
+- **Cancel, expiry, stale** take the whole order out (visible and hidden).
+- **Failed match.** An innocent iceberg re-enters at the priority it had and
+  shows a full slice again; at fault it becomes stale, as any order.
+- **Restart.** `orders.visible_quantity` and `orders.priority_seq` are written
+  with every state change; `restore` rebuilds each book in (price, priority)
+  order. The next arrival sequence continues after the highest of `seq` and
+  `priority_seq`.
+- **Delegate pre-check.** `uncoveredMakers` counts an iceberg for its visible
+  slice only: the incoming order may reach the orders resting behind it before
+  the next slice, so they are checked too. Each maker's own check still covers
+  its whole remainder.
+
+**Settlement and approvals.** Each fill settles as today. The approval (SPL
+delegation, ERC-20 allowance) must still cover the **whole remaining
+quantity**, hidden part included: the service checks `remaining`, not the
+slice.
+
+**Honest limit.** The on-chain approval is public: anyone can read a wallet's
+delegation or allowance and see up to the total it may trade. An iceberg hides
+its size from the book, not from the chain. Fills are public too once settled.
+
+**Privacy of the read paths** (audited; `test/service/iceberg.test.ts` checks
+that none shows the total or the remainder):
+
+| Read path | Who | What an iceberg shows |
+|---|---|---|
+| `GET /v1/books/:chain/:asset` | public | the visible slice, inside its price level |
+| `order_book` view (Supabase, anon/authenticated) | public | the visible slice (`sum(book_quantity)`) |
+| `orders` table (anon/authenticated) | public | live orders' price-level columns and `book_quantity` only; `quantity`, `filled_quantity`, `released_quantity`, `voided_quantity`, `display_quantity`, `visible_quantity`, `priority_seq` are not granted |
+| `GET /v1/orders?chain=&wallet=`, `GET /v1/orders/:id` | public (unsigned; order ids reach the counterparty through matches) | `quantity` and `remaining` are `null`; `displayQuantity`, `visibleQuantity` (0 once out of the book) and the fill counters are shown |
+| `GET /v1/matches...`, `GET /v1/trades...` | public | fills only (public on-chain once settled) |
+| `POST /v1/orders`, `POST /v1/orders/cancel` answers | the wallet (signed request) | the total and the remainder |
+| WebSocket | none exists | |
+
+The wallet's own total: the only signed answers are the placement and the
+cancellation. The site keeps the total from the intent the wallet signed and
+computes the remainder as quantity - (filled - released - voided), all of
+which the public view shows except the quantity. A wallet-signed read of a
+wallet's own orders belongs with the mainnet sign-in above.
+
+**Schema** (`20261127120000_iceberg_orders`):
+
+- `display_quantity` (signed, immutable in `orders_guard_update`), checks:
+  only with `intent_version >= 3`, `time_in_force = 'gtc'`, at least 1, below
+  `quantity`, a multiple of `lot_size`; a v3 row is an iceberg.
+- `visible_quantity`: present exactly for icebergs, at most the display, and
+  while the order rests, positive and within its remainder.
+- `priority_seq`: icebergs only, later than `seq`, unique, and it only moves
+  later (guard). Null until the first refresh.
+- `book_quantity`, generated: `visible_quantity` for an iceberg, the remaining
+  quantity otherwise. It is what `anon`/`authenticated` read now. **Change for
+  direct PostgREST readers of `orders`**: `quantity` and the fill counters are
+  no longer readable by them (`order_book` keeps its columns; the site reads
+  only `order_book`).
+- **Deploy order.** Apply the migration, then deploy. The service requires it
+  (`REQUIRED_MIGRATIONS`); the previous build keeps working on the migrated
+  schema (it writes no iceberg, and `book_quantity` is generated).
+
 ## Not done yet
 
 - HyperEVM testnet: no v1 deployment yet; its settings are in the config
@@ -686,6 +802,9 @@ Production testnet API at `https://api.niaraglobal.com`. Testnet only.
 - The match ids made before a restart are not reloaded into the engine's
   duplicate check; a repeated UUID v4 would hit the primary key, fail the
   transaction and restart the service.
+- A wallet cannot read its own iceberg's total from the API after placement
+  (only the signed placement and cancellation answers show it); a
+  wallet-signed read is the mainnet sign-in's work.
 - On-chain cancellation (`cancel_intent` on Solana, a `cancelled` mapping on
   EVM) waits for the on-chain signed-intents milestone; until then a
   cancellation is enforced off-chain, and recorded in `orders.cancel_reason`

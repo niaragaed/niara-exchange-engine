@@ -149,6 +149,12 @@ export interface OrderRow {
   cancelSignature?: string | null;
   /** Migration 20261124120000: signed with a v2 intent; v1 orders are GTC. Absent = GTC. */
   timeInForce?: TimeInForce;
+  /** Migration 20261127120000 (iceberg, intent v3): the signed display quantity; null = shown whole. */
+  displayQuantity?: bigint | null;
+  /** Icebergs: the current visible slice. Null for an order shown whole. */
+  visibleQuantity?: bigint | null;
+  /** Icebergs: the time priority of the current slice once refreshed; null = `seq`. */
+  prioritySeq?: number | null;
 }
 
 /**
@@ -167,7 +173,8 @@ export interface OrderClosing {
 export const ORDER_COLUMNS = `id::text, seq::text, chain_id, asset, side::text, quantity::text, lot_size::text,
   limit_price::text, payment_asset, wallet, nonce, extract(epoch from expires_at)::bigint::text as expires_at,
   intent_version, intent_signature, filled_quantity::text, settled_quantity::text, released_quantity::text,
-  voided_quantity::text, status::text, cancel_reason::text, cancel_signature, time_in_force::text`;
+  voided_quantity::text, status::text, cancel_reason::text, cancel_signature, time_in_force::text,
+  display_quantity::text, visible_quantity::text, priority_seq::text`;
 
 export interface RawOrder {
   id: string;
@@ -192,6 +199,9 @@ export interface RawOrder {
   cancel_reason: StoredCancelReason | null;
   cancel_signature: string | null;
   time_in_force: "gtc" | "ioc";
+  display_quantity: string | null;
+  visible_quantity: string | null;
+  priority_seq: string | null;
 }
 
 export function toOrderRow(o: RawOrder): OrderRow {
@@ -218,6 +228,9 @@ export function toOrderRow(o: RawOrder): OrderRow {
     cancelReason: o.cancel_reason,
     cancelSignature: o.cancel_signature,
     timeInForce: o.time_in_force === "ioc" ? "IOC" : "GTC",
+    displayQuantity: o.display_quantity === null ? null : BigInt(o.display_quantity),
+    visibleQuantity: o.visible_quantity === null ? null : BigInt(o.visible_quantity),
+    prioritySeq: o.priority_seq === null ? null : Number(o.priority_seq),
   };
 }
 
@@ -267,10 +280,14 @@ export async function countOpenOrders(tx: Queryable, chain: ChainId, wallet: str
   return Number(r.rows[0]?.n ?? 0);
 }
 
-/** Highest `seq` of orders and of matches (0 when none): the engine continues after them. */
+/**
+ * Highest sequence of orders (their `seq` and the `priority_seq` of refreshed iceberg
+ * slices, which come from the same counter) and of matches (0 when none): the engine
+ * continues after them.
+ */
 export async function loadSequences(tx: Queryable): Promise<{ lastOrderSeq: number; lastMatchSeq: number }> {
   const r = await tx.query<{ o: string; m: string }>(
-    `select (select coalesce(max(seq), 0) from public.orders)::text as o,
+    `select (select coalesce(greatest(max(seq), max(priority_seq)), 0) from public.orders)::text as o,
             (select coalesce(max(seq), 0) from public.matches)::text as m`,
   );
   return { lastOrderSeq: Number(r.rows[0]!.o), lastMatchSeq: Number(r.rows[0]!.m) };
@@ -286,9 +303,10 @@ export async function insertOrder(tx: Queryable, o: OrderRow): Promise<void> {
     `insert into public.orders
        (id, seq, chain_id, asset, side, quantity, lot_size, limit_price, payment_asset, wallet, nonce,
         expires_at, intent_version, intent_signature, filled_quantity, status, cancel_reason, cancel_signature,
-        time_in_force)
+        time_in_force, display_quantity, visible_quantity, priority_seq)
      overriding system value
-     values ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, to_timestamp($12), $13, $14, $15, $16, $17, $18, $19)`,
+     values ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, to_timestamp($12), $13, $14, $15, $16, $17, $18, $19,
+             $20, $21, $22)`,
     [
       o.id,
       o.seq,
@@ -309,6 +327,9 @@ export async function insertOrder(tx: Queryable, o: OrderRow): Promise<void> {
       o.cancelReason ?? null,
       o.cancelSignature ?? null,
       o.timeInForce === "IOC" ? "ioc" : "gtc",
+      o.displayQuantity?.toString() ?? null,
+      o.visibleQuantity?.toString() ?? null,
+      o.prioritySeq ?? null,
     ],
   );
 }
@@ -320,21 +341,36 @@ export async function insertOrder(tx: Queryable, o: OrderRow): Promise<void> {
  *
  * `closing` is written when the order leaves the book (cancelled, expired, stale); without
  * it the stored reason is kept, and a status that needs one is refused by the table check.
+ *
+ * Icebergs: `visibleQuantity` (the slice) and `prioritySeq` (its time priority, written
+ * once it differs from `seq`); absent, the stored values are kept.
  */
 export async function updateOrderState(
   tx: Queryable,
   id: string,
   filledQuantity: bigint,
   status: OrderStatus,
-  counters: { releasedQuantity: bigint; voidedQuantity: bigint } = { releasedQuantity: 0n, voidedQuantity: 0n },
+  counters: {
+    releasedQuantity: bigint;
+    voidedQuantity: bigint;
+    seq?: number;
+    prioritySeq?: number;
+    visibleQuantity?: bigint;
+  } = { releasedQuantity: 0n, voidedQuantity: 0n },
   closing?: OrderClosing,
 ): Promise<void> {
+  const refreshed =
+    counters.prioritySeq !== undefined && counters.seq !== undefined && counters.prioritySeq !== counters.seq
+      ? counters.prioritySeq
+      : null;
   const r = await tx.query<{ id: string }>(
     `update public.orders
         set filled_quantity = $2, status = $3,
             released_quantity = $4, voided_quantity = $5,
             cancel_reason = coalesce($6::public.cancel_reason, cancel_reason),
-            cancel_signature = coalesce($7, cancel_signature)
+            cancel_signature = coalesce($7, cancel_signature),
+            visible_quantity = coalesce($8::numeric, visible_quantity),
+            priority_seq = coalesce($9::bigint, priority_seq)
       where id = $1 returning id::text`,
     [
       id,
@@ -344,6 +380,8 @@ export async function updateOrderState(
       counters.voidedQuantity.toString(),
       closing?.reason ?? null,
       closing?.signature ?? null,
+      counters.visibleQuantity?.toString() ?? null,
+      refreshed,
     ],
   );
   if (r.rows.length !== 1) throw new Error(`order ${id} not found`);
@@ -373,21 +411,26 @@ export const REQUIRED_MIGRATIONS = [
   "20261120130000_cancel_reasons",
   "20261122120000_listing_metadata",
   "20261124120000_time_in_force",
+  "20261127120000_iceberg_orders",
 ] as const;
 
 /** The required migrations that are not applied yet (empty when the schema is ready). */
+type MigrationKey = "match_reversals" | "cancel_reasons" | "listing_metadata" | "time_in_force" | "iceberg_orders";
+
 export async function missingMigrations(tx: Queryable): Promise<string[]> {
-  const r = await tx.query<{ match_reversals: boolean; cancel_reasons: boolean; listing_metadata: boolean; time_in_force: boolean }>(
+  const r = await tx.query<Record<MigrationKey, boolean>>(
     `select to_regclass('public.match_reversals') is not null as match_reversals,
             exists (select 1 from information_schema.columns
                      where table_schema = 'public' and table_name = 'orders' and column_name = 'cancel_reason') as cancel_reasons,
             exists (select 1 from information_schema.columns
                      where table_schema = 'public' and table_name = 'listings' and column_name = 'symbol') as listing_metadata,
             exists (select 1 from information_schema.columns
-                     where table_schema = 'public' and table_name = 'orders' and column_name = 'time_in_force') as time_in_force`,
+                     where table_schema = 'public' and table_name = 'orders' and column_name = 'time_in_force') as time_in_force,
+            exists (select 1 from information_schema.columns
+                     where table_schema = 'public' and table_name = 'orders' and column_name = 'display_quantity') as iceberg_orders`,
   );
   const row = r.rows[0];
-  return REQUIRED_MIGRATIONS.filter((m) => row?.[m.slice(15) as "match_reversals" | "cancel_reasons" | "listing_metadata" | "time_in_force"] !== true);
+  return REQUIRED_MIGRATIONS.filter((m) => row?.[m.slice(15) as MigrationKey] !== true);
 }
 
 // ---------------------------------------------------------------------------

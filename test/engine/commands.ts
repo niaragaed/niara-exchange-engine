@@ -1,7 +1,8 @@
 /**
  * TEST ONLY: a random command model shared by the restart tests (engine only, and
  * engine + PGlite). Small price and size ranges, so orders cross, partially fill,
- * self-trade, fall below the minimum and expire often. Identifiers are labeled test
+ * self-trade, fall below the minimum and expire often; some orders are icebergs, so
+ * slices refresh and lose priority. Identifiers are labeled test
  * values, not real wallets, mints or tokens.
  */
 import fc from "fast-check";
@@ -40,7 +41,8 @@ export function marketOf(i: number): Market {
 }
 
 export type Command =
-  | { kind: "place"; market: number; wallet: number; side: Side; lots: number; price: number; ttl: number }
+  /** `display`: lots shown at a time (an iceberg) when 1 <= display < lots; otherwise shown whole. */
+  | { kind: "place"; market: number; wallet: number; side: Side; lots: number; price: number; ttl: number; display: number }
   | { kind: "cancel"; pick: number; byOwner: boolean }
   | { kind: "stale"; pick: number }
   | { kind: "tick"; secs: number }
@@ -57,6 +59,7 @@ export const commandArb: fc.Arbitrary<Command> = fc.oneof(
       lots: fc.integer({ min: 1, max: 6 }),
       price: fc.integer({ min: 1, max: 6 }),
       ttl: fc.integer({ min: 30, max: 900 }),
+      display: fc.integer({ min: 0, max: 3 }),
     }),
   },
   { weight: 2, arbitrary: fc.record({ kind: fc.constant("cancel" as const), pick: fc.nat(), byOwner: fc.boolean() }) },
@@ -93,6 +96,7 @@ export async function apply(engine: MatchingEngine, c: Command, ctx: Context, si
         limitPrice: BigInt(c.price),
         lotSize: LOT,
         expiresAt: ctx.now + c.ttl,
+        ...(c.display >= 1 && c.display < c.lots && { displayQuantity: BigInt(c.display) * LOT }),
       };
       const r = engine.place(input, ctx.now);
       if (r.accepted) {

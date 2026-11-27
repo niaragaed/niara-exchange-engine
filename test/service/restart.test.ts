@@ -46,11 +46,12 @@ let nonceCounter = 0;
 
 function dbSink(engine: () => MatchingEngine, catalog: () => Catalog): Sink {
   return {
-    placed: (result) =>
+    placed: (result, input) =>
       asServiceRole(t.db, (tx) =>
         persistPlacement(tx, engine(), catalog(), result, {
           nonce: (++nonceCounter).toString(16).padStart(32, "0"),
-          intentVersion: 1,
+          // Icebergs are signed with intent v3; the others as v1 (GTC).
+          intentVersion: input.displayQuantity === undefined ? 1 : 3,
           intentSignature: "TEST-SIGNATURE",
         }),
       ),

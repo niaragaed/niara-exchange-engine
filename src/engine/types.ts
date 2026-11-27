@@ -55,6 +55,11 @@ export interface OrderInput {
   expiresAt: number;
   /** Signed (intent v2). Absent = GTC (v1 intents). */
   timeInForce?: TimeInForce;
+  /**
+   * Iceberg (signed, intent v3): asset base units shown in the book at a time, whole
+   * lots, at least one lot, less than `quantity`; GTC only. Absent = shown whole.
+   */
+  displayQuantity?: bigint;
 }
 
 export interface Match {

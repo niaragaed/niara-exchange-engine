@@ -89,7 +89,7 @@ describe("intent validation", () => {
     expect(() => validateIntent(solanaIntent(sol.wallet, { nonce: "A".repeat(32) }))).toThrow(/nonce/);
     expect(() => validateIntent({ ...solanaIntent(sol.wallet), chain: "sepolia" as never })).toThrow(/unknown chain/);
     expect(() => validateIntent({ ...solanaIntent(sol.wallet), side: "short" as never })).toThrow(/side/);
-    expect(() => validateIntent({ ...solanaIntent(sol.wallet), version: 3 as never })).toThrow(/version/);
+    expect(() => validateIntent({ ...solanaIntent(sol.wallet), version: 4 as never })).toThrow(/version/);
   });
 
   it("parses amounts only from decimal strings, never from JSON numbers", () => {

@@ -26,6 +26,9 @@ function toRestored(o: OrderView): RestoredOrder {
     seq: o.seq,
     filledQuantity: o.filledQuantity,
     status: o.status,
+    // Icebergs: the signed display, the visible slice and its priority survive the restart.
+    ...(o.displayQuantity !== undefined && { displayQuantity: o.displayQuantity, prioritySeq: o.prioritySeq }),
+    ...(o.visibleQuantity !== undefined && { visibleQuantity: o.visibleQuantity }),
   };
 }
 

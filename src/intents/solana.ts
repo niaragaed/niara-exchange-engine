@@ -1,7 +1,7 @@
 import { verifyAsync } from "@noble/ed25519";
 import { base58 } from "@scure/base";
 import { CHAINS } from "../chains.ts";
-import { IntentError, type OrderIntent, type TimeInForce } from "./types.ts";
+import { ICEBERG_INTENT_VERSION, IntentError, type OrderIntent, type TimeInForce } from "./types.ts";
 import { validateIntent } from "./validate.ts";
 
 /**
@@ -14,8 +14,9 @@ import { validateIntent } from "./validate.ts";
  * message. The on-chain check (spec §3.6, Ed25519 program + instructions sysvar) must
  * rebuild the same bytes.
  *
- * v2 adds one line, `Time in force`, after the limit price; v1 texts are unchanged. The
- * first line carries the version, so a v1 and a v2 text never coincide.
+ * v2 adds one line, `Time in force`, after the limit price; v1 texts are unchanged. v3
+ * (iceberg) adds one more, `Display quantity`, after it; v2 texts are unchanged. The
+ * first line carries the version, so texts of two versions never coincide.
  */
 export function solanaIntentMessage(intent: OrderIntent): Uint8Array {
   const i = validateIntent(intent);
@@ -34,6 +35,7 @@ export function solanaIntentMessage(intent: OrderIntent): Uint8Array {
     `Lot size: ${i.lotSize} (asset base units)`,
     `Limit price: ${i.limitPrice} (payment base units per lot)`,
     ...(i.version === 1 ? [] : [`Time in force: ${TIF_TEXT[i.timeInForce!]}`]),
+    ...(i.version === ICEBERG_INTENT_VERSION ? [`Display quantity: ${i.displayQuantity} (asset base units shown in the book at a time)`] : []),
     `Payment asset: ${i.paymentAsset}`,
     `Nonce: ${i.nonce}`,
     `Expires at: ${i.expiresAt} (unix seconds)`,

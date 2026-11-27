@@ -3,7 +3,7 @@ import { CHAINS, type ChainId } from "../chains.ts";
 import type { OrderInput } from "../engine/types.ts";
 import { verifyEvmIntent } from "./evm.ts";
 import { verifySolanaIntent } from "./solana.ts";
-import { IntentError, timeInForceOf, type IntentErrorCode, type OrderIntent } from "./types.ts";
+import { IntentError, displayQuantityOf, timeInForceOf, type IntentErrorCode, type OrderIntent } from "./types.ts";
 import { validateIntent } from "./validate.ts";
 
 /** Verifies `signature` over `intent` with the scheme of the intent's chain. */
@@ -100,6 +100,7 @@ export async function admitOrderIntent(args: {
       lotSize: intent.lotSize,
       expiresAt: intent.expiresAt,
       timeInForce: timeInForceOf(intent),
+      ...(displayQuantityOf(intent) !== undefined && { displayQuantity: displayQuantityOf(intent)! }),
     },
   };
 }

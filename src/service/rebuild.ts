@@ -6,7 +6,8 @@ import { buildCatalog, canonicalAddress, type Catalog } from "./catalog.ts";
 /**
  * Restart: builds a fresh engine from the database. Markets come from `chains` and
  * `listings`; the books from every non-terminal order, in their original `seq`, with
- * their fills; the next order and match sequences continue after the highest stored.
+ * their fills (and, for icebergs, the visible slice and its priority); the next order
+ * and match sequences continue after the highest stored.
  * One transaction, so the snapshot is consistent.
  */
 export async function rebuildEngine(
@@ -46,6 +47,11 @@ export async function rebuildEngine(
       releasedQuantity: r.releasedQuantity ?? 0n,
       voidedQuantity: r.voidedQuantity ?? 0n,
       status: r.status,
+      ...(r.displayQuantity != null && {
+        displayQuantity: r.displayQuantity,
+        prioritySeq: r.prioritySeq ?? r.seq,
+      }),
+      ...(r.visibleQuantity != null && { visibleQuantity: r.visibleQuantity }),
     };
   });
   engine.restore({

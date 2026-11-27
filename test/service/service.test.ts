@@ -391,7 +391,7 @@ describe("single instance", () => {
     query: async <T>(sql: string) => {
       if (sql.includes("pg_try_advisory_lock")) return { rows: [{ locked: answers.locked }] as T[] };
       if (sql.includes("pg_has_role")) return { rows: [{ ok: answers.member }] as T[] };
-      if (sql.includes("match_reversals")) return { rows: [{ match_reversals: true, cancel_reasons: true, listing_metadata: true, time_in_force: true }] as T[] };
+      if (sql.includes("match_reversals")) return { rows: [{ match_reversals: true, cancel_reasons: true, listing_metadata: true, time_in_force: true, iceberg_orders: true }] as T[] };
       throw new Error(`unexpected query: ${sql}`);
     },
     transaction: async () => {

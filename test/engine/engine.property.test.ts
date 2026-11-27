@@ -27,7 +27,7 @@ const VARIABLE_MIN_MARKET = 1;
 const MINS = [0n, 3n, 8n] as const;
 
 type Command =
-  | { kind: "place"; market: number; wallet: number; side: Side; lots: number; price: number; ttl: number; ioc: boolean }
+  | { kind: "place"; market: number; wallet: number; side: Side; lots: number; price: number; ttl: number; ioc: boolean; display: number }
   | { kind: "cancel"; pick: number; byOwner: boolean }
   | { kind: "stale"; pick: number }
   | { kind: "tick"; secs: number }
@@ -48,6 +48,8 @@ const commandArb: fc.Arbitrary<Command> = fc.oneof(
       ttl: fc.integer({ min: 30, max: 900 }),
       // About one order in three is IOC (a market order is an IOC with a price cap).
       ioc: fc.integer({ min: 0, max: 2 }).map((x) => x === 0),
+      // Lots shown at a time when 1 <= display < lots (an iceberg); an IOC iceberg is refused.
+      display: fc.integer({ min: 0, max: 3 }),
     }),
   },
   { weight: 2, arbitrary: fc.record({ kind: fc.constant("cancel" as const), pick: fc.nat(), byOwner: fc.boolean() }) },
@@ -79,6 +81,8 @@ interface Run {
   iocPlaced: { id: string; status: string; remaining: bigint; cancelReasons: string[] }[];
   /** Steps after which an IOC order was found in a book. */
   iocRestingAfter: number[];
+  /** Iceberg rule breaks seen after a step (slice size, priority order), with the step. */
+  icebergBreaks: string[];
 }
 
 function run(commands: readonly Command[], seed: number): Run {
@@ -88,7 +92,17 @@ function run(commands: readonly Command[], seed: number): Run {
   );
   engine.upsertMarket(market({ chain: BOND.chain, asset: BOND.asset, assetClass: "fixed_income" }));
 
-  const out: Run = { events: [], matches: [], placed: [], engine, crossedAfter: [], reversed: new Set(), iocPlaced: [], iocRestingAfter: [] };
+  const out: Run = {
+    events: [],
+    matches: [],
+    placed: [],
+    engine,
+    crossedAfter: [],
+    reversed: new Set(),
+    iocPlaced: [],
+    iocRestingAfter: [],
+    icebergBreaks: [],
+  };
   const iocIds = new Set<string>();
   const mins: bigint[] = MARKETS.map((_, i) => (i === 2 ? FIXED_MIN : 0n));
   let now = NOW;
@@ -109,6 +123,7 @@ function run(commands: readonly Command[], seed: number): Run {
           lotSize: LOT,
           expiresAt: now + c.ttl,
           ...(c.ioc && { timeInForce: "IOC" as const }),
+          ...(c.display >= 1 && c.display < c.lots && { displayQuantity: BigInt(c.display) * LOT }),
         };
         const r = engine.place(input, now);
         out.events.push(...r.events);
@@ -168,8 +183,35 @@ function run(commands: readonly Command[], seed: number): Run {
       const ask = b.asks[0];
       if (bid && ask && bid.price >= ask.price) out.crossedAfter.push(step);
     }
-    if (iocIds.size > 0 && engine.exportState().books.some((b) => [...b.bids, ...b.asks].some((id) => iocIds.has(id)))) {
+    const state = engine.exportState();
+    if (iocIds.size > 0 && state.books.some((b) => [...b.bids, ...b.asks].some((id) => iocIds.has(id)))) {
       out.iocRestingAfter.push(step);
+    }
+    // Icebergs: a resting slice is a positive part of min(display, remaining); each side
+    // of a book is in (price, priority) order; no two orders share a priority.
+    const byId = new Map(state.orders.map((o) => [o.id, o]));
+    const priorities = new Set<number>();
+    for (const b of state.books) {
+      for (const [side, ids] of [["buy", b.bids], ["sell", b.asks]] as const) {
+        let prev: OrderView | undefined;
+        for (const id of ids) {
+          const o = byId.get(id)!;
+          if (priorities.has(o.prioritySeq)) out.icebergBreaks.push(`step ${step}: priority ${o.prioritySeq} twice`);
+          priorities.add(o.prioritySeq);
+          if (o.displayQuantity !== undefined) {
+            const v = o.visibleQuantity ?? -1n;
+            const cap = o.displayQuantity < o.remaining ? o.displayQuantity : o.remaining;
+            if (v <= 0n || v > cap) out.icebergBreaks.push(`step ${step}: ${id} shows ${v}, cap ${cap}`);
+          }
+          if (prev) {
+            const better = side === "buy" ? prev.limitPrice > o.limitPrice : prev.limitPrice < o.limitPrice;
+            if (!better && !(prev.limitPrice === o.limitPrice && prev.prioritySeq < o.prioritySeq)) {
+              out.icebergBreaks.push(`step ${step}: ${prev.id} before ${id} out of priority`);
+            }
+          }
+          prev = o;
+        }
+      }
     }
   });
   return out;
@@ -229,7 +271,7 @@ describe("matching engine invariants (fast-check)", () => {
     );
   });
 
-  it("quantity conservation: quantity = filled + remaining for every order, and the book holds exactly the live remainders", () => {
+  it("quantity conservation: quantity = filled + remaining for every order, and the book holds exactly the live remainders (icebergs: their visible slices)", () => {
     fc.assert(
       fc.property(commandsArb, fc.nat(), (commands, seed) => {
         const r = run(commands, seed);
@@ -240,8 +282,9 @@ describe("matching engine invariants (fast-check)", () => {
           expect(o.filledQuantity - o.releasedQuantity - o.voidedQuantity + o.remaining).toBe(input.quantity);
           expect(o.status === "filled").toBe(o.remaining === 0n);
           if (o.status === "open" || o.status === "partially_filled") {
+            // An iceberg counts for its visible slice only: its hidden quantity is never in the book.
             const key = `${o.chain}/${o.asset}/${o.side}`;
-            resting.set(key, (resting.get(key) ?? 0n) + o.remaining);
+            resting.set(key, (resting.get(key) ?? 0n) + (o.visibleQuantity ?? o.remaining));
           }
         }
         for (const m of MARKETS) {
@@ -400,6 +443,43 @@ describe("matching engine invariants (fast-check)", () => {
         const ioc = new Set(r.iocPlaced.map((p) => p.id));
         for (const e of r.events) {
           if ("type" in e && e.type === "order_cancelled" && e.reason === "ioc_unfilled") expect(ioc.has(e.orderId)).toBe(true);
+        }
+      }),
+      PARAMS,
+    );
+  });
+  it("iceberg: a resting slice is always a positive part of min(display, remaining), books stay in price-priority order, priorities are unique", () => {
+    fc.assert(
+      fc.property(commandsArb, fc.nat(), (commands, seed) => {
+        expect(run(commands, seed).icebergBreaks).toEqual([]);
+      }),
+      PARAMS,
+    );
+  });
+
+  it("iceberg: never a match above its visible slice while it rests, GTC only, and no slice below a fixed minimum while hidden quantity remains", () => {
+    fc.assert(
+      fc.property(commandsArb, fc.nat(), (commands, seed) => {
+        const r = run(commands, seed);
+        const icebergs = new Map(r.placed.filter((o) => o.displayQuantity !== undefined).map((o) => [o.id, o]));
+        for (const o of icebergs.values()) expect(o.timeInForce).not.toBe("IOC");
+        for (const { match } of r.matches) {
+          const maker = icebergs.get(match.makerOrderId);
+          if (maker) expect(match.quantity).toBeLessThanOrEqual(maker.displayQuantity!);
+        }
+        // An IOC with a display quantity is refused, never accepted.
+        for (const e of r.events) {
+          if ("type" in e && e.type === "order_rejected" && e.reason === "iceberg_requires_gtc") {
+            expect(r.placed.some((p) => p.id === e.orderId)).toBe(false);
+          }
+        }
+        const fixed = MARKETS[2];
+        for (const o of icebergs.values()) {
+          const v = orderOf(r, o.id);
+          if (v.chain !== fixed.chain || v.asset !== fixed.asset) continue;
+          if ((v.status === "open" || v.status === "partially_filled") && v.visibleQuantity! < v.remaining) {
+            expect((v.visibleQuantity! / v.lotSize) * v.limitPrice).toBeGreaterThanOrEqual(FIXED_MIN);
+          }
         }
       }),
       PARAMS,

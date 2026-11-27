@@ -51,13 +51,13 @@ describe("applying the migration", () => {
   });
 
   it("is named as missing before, applies in ONE transaction, and makes existing orders GTC", async () => {
-    expect(await missingMigrations(t.db)).toEqual(["20261124120000_time_in_force"]);
+    expect(await missingMigrations(t.db)).toEqual(["20261124120000_time_in_force", "20261127120000_iceberg_orders"]);
     const old = await insert("open", { intent_version: 1 });
     // As `supabase db push` runs a migration file: inside one transaction.
     await t.pglite.exec("begin");
     await applyMigration(t.pglite, MIGRATION);
     await t.pglite.exec("commit");
-    expect(await missingMigrations(t.db)).toEqual([]);
+    expect(await missingMigrations(t.db)).toEqual(["20261127120000_iceberg_orders"]);
     const r = await t.pglite.query<{ tif: string }>("select time_in_force::text as tif from public.orders where id = $1", [old]);
     expect(r.rows[0]!.tif).toBe("gtc");
   });

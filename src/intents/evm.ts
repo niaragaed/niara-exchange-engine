@@ -29,6 +29,14 @@ export const ORDER_INTENT_V2_TYPES = {
   OrderIntent: [...ORDER_INTENT_TYPES.OrderIntent, { name: "timeInForce", type: "uint8" }],
 } as const;
 
+/**
+ * v3 intents (iceberg): v2's fields, then `displayQuantity` (asset base units shown in the
+ * book at a time). Same primary type name and domain; a third type hash.
+ */
+export const ORDER_INTENT_V3_TYPES = {
+  OrderIntent: [...ORDER_INTENT_V2_TYPES.OrderIntent, { name: "displayQuantity", type: "uint256" }],
+} as const;
+
 export const ORDER_INTENT_TYPE =
   "OrderIntent(address wallet,uint8 side,address asset,uint256 quantity,uint256 lotSize," +
   "uint256 limitPrice,address paymentAsset,bytes16 nonce,uint64 expiresAt)";
@@ -37,19 +45,25 @@ export const ORDER_INTENT_V2_TYPE =
   "OrderIntent(address wallet,uint8 side,address asset,uint256 quantity,uint256 lotSize," +
   "uint256 limitPrice,address paymentAsset,bytes16 nonce,uint64 expiresAt,uint8 timeInForce)";
 
+export const ORDER_INTENT_V3_TYPE =
+  "OrderIntent(address wallet,uint8 side,address asset,uint256 quantity,uint256 lotSize," +
+  "uint256 limitPrice,address paymentAsset,bytes16 nonce,uint64 expiresAt,uint8 timeInForce,uint256 displayQuantity)";
+
 /** `keccak256(ORDER_INTENT_TYPE)` (v1), for the Solidity verifier. */
 export const ORDER_INTENT_TYPEHASH = keccak256(toHex(ORDER_INTENT_TYPE));
 /** `keccak256(ORDER_INTENT_V2_TYPE)`, for the Solidity verifier. */
 export const ORDER_INTENT_V2_TYPEHASH = keccak256(toHex(ORDER_INTENT_V2_TYPE));
+/** `keccak256(ORDER_INTENT_V3_TYPE)`, for the Solidity verifier. */
+export const ORDER_INTENT_V3_TYPEHASH = keccak256(toHex(ORDER_INTENT_V3_TYPE));
 
 // secp256k1 group order / 2: signatures with a larger s are rejected, as OpenZeppelin's
 // ECDSA does, so each intent has one valid signature encoding.
 const SECP256K1_HALF_N = 0x7fffffffffffffffffffffffffffffff5d576e7357a4501ddfe92f46681b20a0n;
 
 /**
- * EIP-712 typed data for `intent`, with the v1 or v2 type by `intent.version`. Domain:
+ * EIP-712 typed data for `intent`, with the v1, v2 or v3 type by `intent.version`. Domain:
  * name "Niara Exchange", version "1", the chain's EIP-155 id, and `verifyingContract` =
- * the NiaraSettlement address (unchanged in v2: the contract did not change).
+ * the NiaraSettlement address (unchanged in v2 and v3: the contract did not change).
  */
 export function evmIntentTypedData(intent: OrderIntent): TypedDataDefinition {
   const i = validateIntent(intent);
@@ -75,11 +89,13 @@ export function evmIntentTypedData(intent: OrderIntent): TypedDataDefinition {
     expiresAt: BigInt(i.expiresAt),
   };
   if (i.version === 1) return { domain, types: ORDER_INTENT_TYPES, primaryType: "OrderIntent" as const, message };
+  const v2 = { ...message, timeInForce: i.timeInForce === "IOC" ? 1 : 0 };
+  if (i.version === 2) return { domain, types: ORDER_INTENT_V2_TYPES, primaryType: "OrderIntent" as const, message: v2 };
   return {
     domain,
-    types: ORDER_INTENT_V2_TYPES,
+    types: ORDER_INTENT_V3_TYPES,
     primaryType: "OrderIntent" as const,
-    message: { ...message, timeInForce: i.timeInForce === "IOC" ? 1 : 0 },
+    message: { ...v2, displayQuantity: i.displayQuantity! },
   };
 }
 
